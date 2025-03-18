@@ -15,7 +15,7 @@
         };
         apps.default = {
           type = "app";
-          program = "${pkgs.writers.writeBashBin "stopp-rasisme" ''echo "rasisme er ikke greit!" | cowsay | lolcat --animate --duration 16''}/bin/stopp-rasisme";
+          program = "${pkgs.writers.writeBashBin "stopp-rasisme" ''echo "rasisme er ikke greit!" | ${pkgs.cowsay}/bin/cowsay | ${pkgs.lolcat}/bin/lolcat --animate --duration 16''}/bin/stopp-rasisme";
         };
       }
     );
