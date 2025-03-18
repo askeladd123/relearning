@@ -1,0 +1,3 @@
+- **learn**: runs and saves state of environment
+- **data**: saved here
+- **frontend**: reads data and plays it in a browser
