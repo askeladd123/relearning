@@ -1,0 +1,12 @@
+{
+  "name": "relearning",
+  "version": "0.0.1",
+  "author": "Ask Sødal <asksodal@gmail.com>",
+  "scripts": {
+    "build": "parcel build",
+    "start": "parcel"
+  },
+  "dependencies": {
+    "pixi.js": "^8.9.2"
+  }
+}
