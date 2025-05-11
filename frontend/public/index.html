@@ -1,18 +1,53 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>Pixi.js Hello World</title>
-    <style>
-        body {
-            margin: 0;
-            padding: 0;
-            overflow: hidden;
-        }
-    </style>
+  <meta charset="UTF-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Worm Game</title>
+  <style>
+    body {
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      font-family: sans-serif;
+    }
+    #game-container {
+      width: 100%;
+    }
+    #game-container canvas {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+    #action-ui {
+      width: 100%;
+      max-width: 600px;
+      padding: 1em;
+      box-sizing: border-box;
+    }
+    .field-group {
+      margin-bottom: 1em;
+    }
+    label {
+      margin-right: 0.5em;
+    }
+    select, input {
+      margin-right: 1em;
+    }
+  </style>
 </head>
 <body>
-    <script src="bundle.js"></script>
+  <div id="game-container"></div>
+  <div id="action-ui">
+    <div class="field-group">
+      <label for="action-select">Action:</label>
+      <select id="action-select"></select>
+      <button id="send-action">Send Action</button>
+    </div>
+    <div id="action-params"></div>
+  </div>
+  <script type="module" src="bundle.js"></script>
 </body>
 </html>
-

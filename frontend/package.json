@@ -3,10 +3,11 @@
   "version": "0.0.1",
   "author": "Ask Sødal <asksodal@gmail.com>",
   "scripts": {
-    "build": "parcel build",
-    "start": "parcel"
+    "watch": "esbuild --bundle src/script.js --outfile=public/bundle.js --watch",
+    "serve": "esbuild --bundle src/script.js --outfile=public/bundle.js --servedir=public"
   },
   "dependencies": {
-    "pixi.js": "^8.9.2"
+    "pixi.js": "^8.9.2",
+    "esbuild": "^0.25.4"
   }
 }

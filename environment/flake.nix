@@ -11,7 +11,7 @@
         pkgs = nixpkgs.legacyPackages.${system};
       in {
         devShell = pkgs.mkShell {
-          buildInputs = with pkgs; [nodejs_24];
+          buildInputs = with pkgs; [(python313.withPackages (p: with p; [websockets]))];
         };
       }
     );
