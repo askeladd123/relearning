@@ -1,5 +1,6 @@
 import copy
 import logging
+import math
 from typing import Any, Dict, Tuple
 
 logger = logging.getLogger(__name__)
@@ -34,7 +35,25 @@ class GameCore:
         if action.get("action") == "walk":
             dx = float(action.get("dx", 0.0))
             new_x = worm["x"] + dx
-            worm["x"] = max(0.0, min(new_x, 7.99))
+            # clamp x within map bounds
+            max_x = len(state["map"][0]) - 0.01
+            worm["x"] = max(0.0, min(new_x, max_x))
+
+            # apply gravity instantly after walking
+            col = int(math.floor(worm["x"]))
+            height = len(state["map"])
+            found_ground = False
+            # search downward for the first solid tile
+            for row in range(int(math.floor(worm["y"])) + 1, height):
+                if state["map"][row][col] == 1:
+                    # land on top of this tile
+                    worm["y"] = float(row)
+                    found_ground = True
+                    break
+            if not found_ground:
+                # fell off bottom into water -> dead
+                worm["y"] = float(height)
+                worm["health"] = 0
 
         return copy.deepcopy(state), 0.0
 

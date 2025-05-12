@@ -4,22 +4,23 @@ let lastEnv = null;
 let playerId = null;
 let currentPlayer = null;
 let myTurn = false;
+let eliminated = false;
 
 document.addEventListener('DOMContentLoaded', async () => {
-  // ---------- PIXI ----------------------------------------------------
-  const app = new Application();
   const canvasHeight = 400;
+
+  // Create and initialize PIXI Application
+  const app = new Application();
   await app.init({
     width: window.innerWidth,
     height: canvasHeight,
-    backgroundColor: '#1099bb',
+    backgroundColor: 0x1099bb
   });
-  document.getElementById('game-container').appendChild(app.canvas);
+  document.getElementById('game-container').appendChild(app.view);
 
   const content = new Container();
   app.stage.addChild(content);
 
-  // ---------- UI ELEMENTS ---------------------------------------------
   const statusBar = document.createElement('div');
   statusBar.id = 'status-bar';
   statusBar.style.cssText = 'padding:0.5em; text-align:center; font-family:sans-serif;';
@@ -46,7 +47,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   overlay.textContent = 'Waiting for opponent...';
   document.body.appendChild(overlay);
 
-  // ---------- Action presets ------------------------------------------
   const ACTIONS = [
     { action: 'stand' },
     { action: 'walk', dx: 1.0 },
@@ -55,11 +55,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     { action: 'attack', weapon: 'grenade', angle_deg: 15.0, force: 50.0 },
   ];
 
-  // ---------- WebSocket -----------------------------------------------
   const socket = new WebSocket('ws://127.0.0.1:8765');
-
   socket.addEventListener('open', () => {
-    console.log('WebSocket connected');
     socket.send(JSON.stringify({ type: 'CONNECT', nick: 'browser' }));
   });
 
@@ -71,6 +68,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         statusBar.textContent = `You are Player ${playerId}`;
         break;
       case 'TURN_BEGIN':
+        if (eliminated) break;
         currentPlayer = msg.player_id;
         myTurn = currentPlayer === playerId;
         lastEnv = msg.state;
@@ -86,6 +84,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         myTurn = currentPlayer === playerId;
         updateUI();
         break;
+      case 'PLAYER_ELIMINATED':
+        if (msg.player_id === playerId) {
+          eliminated = true;
+          myTurn = false;
+          statusBar.textContent = 'You have been eliminated';
+          sendBtn.disabled = true;
+          actionSelect.disabled = true;
+          actionParams.querySelectorAll('input').forEach(i => i.disabled = true);
+          overlay.textContent = 'Eliminated';
+          overlay.style.visibility = 'visible';
+        }
+        break;
       case 'GAME_OVER':
         alert(`Game over! Winner: ${msg.winner_id}`);
         myTurn = false;
@@ -97,7 +107,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
-  // ---------- UI CONTROLS ---------------------------------------------
   const actionSelect = document.getElementById('action-select');
   const actionParams = document.getElementById('action-params');
   const sendBtn = document.getElementById('send-action');
@@ -135,15 +144,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   buildParams();
 
   function updateUI() {
-    if (playerId != null) {
+    if (playerId != null && !eliminated) {
       statusBar.textContent = myTurn
         ? `Your turn (Player ${playerId})`
         : `Waiting for Player ${currentPlayer}`;
+      sendBtn.disabled = !myTurn;
+      actionSelect.disabled = !myTurn;
+      actionParams.querySelectorAll('input').forEach(i => i.disabled = !myTurn);
+      overlay.style.visibility = myTurn ? 'hidden' : 'visible';
     }
-    sendBtn.disabled = !myTurn;
-    actionSelect.disabled = !myTurn;
-    actionParams.querySelectorAll('input').forEach(i => { i.disabled = !myTurn; });
-    overlay.style.visibility = myTurn ? 'hidden' : 'visible';
   }
 
   sendBtn.addEventListener('click', () => {
@@ -161,11 +170,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   window.addEventListener('resize', () => {
+    // now safe: app.renderer has been initialized by init()
     app.renderer.resize(window.innerWidth, canvasHeight);
     if (lastEnv) drawEnvironment(lastEnv);
   });
 
-  // ---------- Rendering -----------------------------------------------
   function drawEnvironment(env) {
     content.removeChildren();
     const { map, worms = [] } = env;
@@ -177,36 +186,27 @@ document.addEventListener('DOMContentLoaded', async () => {
     const xMargin = (W - tileSize * cols) / 2;
     const yMargin = (H - tileSize * rows) / 2;
 
-    // Draw terrain
     map.forEach((row, y) => {
       row.forEach((cell, x) => {
         const g = new Graphics();
         g.beginFill(cell === 1 ? 0x000000 : 0x1099bb);
-        g.drawRect(
-          xMargin + x * tileSize,
-          yMargin + y * tileSize,
-          tileSize,
-          tileSize,
-        );
+        g.drawRect(xMargin + x * tileSize, yMargin + y * tileSize, tileSize, tileSize);
         g.endFill();
         content.addChild(g);
       });
     });
 
-    // Draw worms with health bar and name/id
     worms.forEach((w) => {
       const cx = xMargin + w.x * tileSize;
       const cy = yMargin + w.y * tileSize;
       const r = tileSize * 0.4;
 
-      // Circle
       const c = new Graphics();
       c.beginFill(0xff0000);
       c.drawCircle(cx, cy, r);
       c.endFill();
       content.addChild(c);
 
-      // Health bar background
       const barWidth = tileSize * 0.8;
       const barHeight = tileSize * 0.1;
       const barX = cx - barWidth / 2;
@@ -217,7 +217,6 @@ document.addEventListener('DOMContentLoaded', async () => {
       bg.endFill();
       content.addChild(bg);
 
-      // Health bar fill
       const fillRatio = Math.max(0, Math.min(w.health / 100, 1));
       const fg = new Graphics();
       const fillColor = w.health > 50
@@ -230,7 +229,6 @@ document.addEventListener('DOMContentLoaded', async () => {
       fg.endFill();
       content.addChild(fg);
 
-      // Name / ID text
       const name = w.nick || `Player ${w.id}`;
       const txt = new Text(name, {
         fontFamily: 'Arial',

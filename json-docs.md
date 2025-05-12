@@ -1,10 +1,8 @@
-# W.O.R.M.S. WebSocket JSON Protocol
+# W\.O.R.M.S. WebSocket JSON Protocol
 
-All messages are JSON objects sent over a WebSocket.  
-Each object **must** include a `"type"` field that selects one of the structures below.  
+All messages are JSON objects sent over a WebSocket.
+Each object **must** include a `"type"` field that selects one of the structures below.
 Clients **must ignore** unknown keys so the protocol can evolve.
-
-Numbers follow JS/Python IEEE-754 semantics unless noted.
 
 ---
 
@@ -22,7 +20,7 @@ Numbers follow JS/Python IEEE-754 semantics unless noted.
       until  │  TURN_BEGIN ───────────────────────────▶│
    GAME_OVER │  ACTION       ◀──────────────────────── │
              │  TURN_RESULT ─────────────────────────▶ │
-             │  TURN_END    ─────────────────────────▶ │
+             │  TURN_END    ─────────────────────────▶ │  ← Now sent after each turn
              │                                         │
              └─▶ GAME_OVER   ◀─────────────────────────┤
 ````
@@ -87,8 +85,10 @@ Sent **only** by the `player_id` that just received `TURN_BEGIN`.
 | stand           | `{ "action": "stand" }`                                                           | –                               |
 | walk            | `{ "action": "walk", "dx": float }`                                               | `dx` in world units (+ → right) |
 | attack\:kick    | `{ "action": "attack", "weapon": "kick", "force": 0-100 }`                        | –                               |
-| attack\:bazooka | `{ "action": "attack", "weapon": "bazooka", "angle_deg": float }`                 | 0 ° = right, CCW positive       |
+| attack\:bazooka | `{ "action": "attack", "weapon": "bazooka", "angle_deg": float }`                 | 0° = right, CCW positive        |
 | attack\:grenade | `{ "action": "attack", "weapon": "grenade", "angle_deg": float, "force": 0-100 }` | –                               |
+
+Gravity is applied **instantly** only after a **walk** action: the worm falls in the same column until it lands on the first solid tile (`map[row][col] == 1`) or exits below the last row (water), which sets its `health` to `0`.
 
 ---
 
@@ -106,14 +106,25 @@ Sent **only** by the `player_id` that just received `TURN_BEGIN`.
 
 ### 1.6 TURN\_END  (server → all)
 
-| Field            | Type    | Required | Description       |
-| ---------------- | ------- | -------- | ----------------- |
-| `type`           | string  | ✓        | `"TURN_END"`      |
-| `next_player_id` | integer | ✓        | Who will act next |
+| Field            | Type    | Required | Description          |
+| ---------------- | ------- | -------- | -------------------- |
+| `type`           | string  | ✓        | `"TURN_END"`         |
+| `next_player_id` | integer | ✓        | ID who will act next |
 
 ---
 
-### 1.7 GAME\_OVER  (server → all)
+### 1.7 PLAYER\_ELIMINATED  (server → all)
+
+| Field       | Type    | Required | Description                 |
+| ----------- | ------- | -------- | --------------------------- |
+| `type`      | string  | ✓        | `"PLAYER_ELIMINATED"`       |
+| `player_id` | integer | ✓        | ID of the eliminated player |
+
+Clients should disable inputs for that player upon receiving this.
+
+---
+
+### 1.8 GAME\_OVER  (server → all)
 
 | Field         | Type       | Required | Description        |
 | ------------- | ---------- | -------- | ------------------ |
@@ -123,7 +134,7 @@ Sent **only** by the `player_id` that just received `TURN_BEGIN`.
 
 ---
 
-### 1.8 ERROR  (server → client)
+### 1.9 ERROR  (server → client)
 
 | Field  | Type   | Required | Description         |
 | ------ | ------ | -------- | ------------------- |
@@ -149,10 +160,10 @@ Sent **only** by the `player_id` that just received `TURN_BEGIN`.
 }
 ```
 
-| Key     | Type          | Description                                                                                                                                             |
-| ------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `worms` | array         | Each worm’s **`id`** (integer), **`nick`** (string, optional), **`health`** (0-100), and **position** in world units (`x`, `y` floats; 1 unit = 1 tile) |
-| `map`   | 2-D int array | `1` = solid terrain, `0` = empty/water. Index (0,0) is top-left                                                                                         |
+| Key     | Type          | Description                                                                                                        |
+| ------- | ------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `worms` | array         | Each worm’s **`id`**, **`nick`**, **`health`**, and **position** in world units (`x`, `y` floats; 1 unit = 1 tile) |
+| `map`   | 2-D int array | `1` = solid terrain, `0` = empty air. Values below the last row (water) kill a worm instantly when fallen into.    |
 
 Clients **must ignore** any extra keys they do not understand.
 
@@ -162,7 +173,7 @@ Clients **must ignore** any extra keys they do not understand.
 
 To draw the map centred in the canvas:
 
-```text
+```
 tile = min(canvasW / cols, canvasH / rows)
 xMargin = (canvasW − tile*cols)/2
 yMargin = (canvasH − tile*rows)/2

@@ -8,10 +8,10 @@ import random
 
 import websockets
 
-# Removed custom TRACE level; using built-in logging levels
-
 def setup_logging() -> logging.Logger:
-    parser = argparse.ArgumentParser(description="W.O.R.M.S. bot client")
+    parser = argparse.ArgumentParser(
+        description="W.O.R.M.S. bot client"
+    )
     parser.add_argument(
         "--log-level",
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
@@ -49,10 +49,19 @@ async def start_client() -> None:
         async for message in ws:
             msg = json.loads(message)
             t = msg.get("type")
+
             if t == "ASSIGN_ID":
                 player_id = msg["player_id"]
                 logger.info("assigned player_id=%d", player_id)
                 continue
+
+            if t == "PLAYER_ELIMINATED":
+                if msg.get("player_id") == player_id:
+                    logger.info("I have been eliminated, closing client")
+                    await ws.close()
+                    break
+                continue
+
             if t == "TURN_BEGIN" and msg.get("player_id") == player_id:
                 action = random.choice(ACTIONS)
                 payload = {"type": "ACTION", "player_id": player_id, "action": action}

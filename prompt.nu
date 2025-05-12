@@ -12,7 +12,7 @@ Please tell me if you think there are inconsistancies with my descriptions and t
 
 If you made changes or created a new file, provide the path and the full code, not just snippets of what you changed. 
 
-Use Canvas to create and edit files.
+Send me the files in code blocks in chat.
 
 # description
 (open description.md)
