@@ -2,6 +2,7 @@ import { Application, Container, Graphics } from 'pixi.js';
 
 let lastEnv = null;
 let playerId = null;
+let currentPlayer = null;
 let myTurn = false;
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -17,6 +18,33 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   const content = new Container();
   app.stage.addChild(content);
+
+  // ---------- UI ELEMENTS ---------------------------------------------
+  const statusBar = document.createElement('div');
+  statusBar.id = 'status-bar';
+  statusBar.style.cssText = 'padding:0.5em; text-align:center; font-family:sans-serif;';
+  document.body.insertBefore(statusBar, document.getElementById('game-container'));
+
+  const overlay = document.createElement('div');
+  overlay.id = 'waiting-overlay';
+  overlay.style.cssText = [
+    'position:absolute',
+    'top:0',
+    'left:0',
+    'width:100%',
+    'height:100%',
+    'background:rgba(0,0,0,0.5)',
+    'display:flex',
+    'align-items:center',
+    'justify-content:center',
+    'color:white',
+    'font-size:2em',
+    'pointer-events:none',
+    'z-index:10',
+    'visibility:hidden'
+  ].join(';');
+  overlay.textContent = 'Waiting for opponent...';
+  document.body.appendChild(overlay);
 
   // ---------- Action presets ------------------------------------------
   const ACTIONS = [
@@ -40,31 +68,36 @@ document.addEventListener('DOMContentLoaded', async () => {
     switch (msg.type) {
       case 'ASSIGN_ID':
         playerId = msg.player_id;
+        statusBar.textContent = `You are Player ${playerId}`;
         break;
       case 'TURN_BEGIN':
-        myTurn = msg.player_id === playerId;
+        currentPlayer = msg.player_id;
+        myTurn = currentPlayer === playerId;
         lastEnv = msg.state;
         drawEnvironment(lastEnv);
+        updateUI();
         break;
       case 'TURN_RESULT':
         lastEnv = msg.state;
         drawEnvironment(lastEnv);
         break;
       case 'TURN_END':
-        myTurn = msg.next_player_id === playerId;
+        currentPlayer = msg.next_player_id;
+        myTurn = currentPlayer === playerId;
+        updateUI();
         break;
       case 'GAME_OVER':
         alert(`Game over! Winner: ${msg.winner_id}`);
         myTurn = false;
+        updateUI();
         break;
       case 'ERROR':
         console.error(msg.msg);
         break;
     }
-    updateSendButton();
   });
 
-  // ---------- UI -------------------------------------------------------
+  // ---------- UI CONTROLS ---------------------------------------------
   const actionSelect = document.getElementById('action-select');
   const actionParams = document.getElementById('action-params');
   const sendBtn = document.getElementById('send-action');
@@ -97,12 +130,24 @@ document.addEventListener('DOMContentLoaded', async () => {
       group.appendChild(inp);
       actionParams.appendChild(group);
     });
+    updateUI();
   }
   actionSelect.addEventListener('change', buildParams);
   buildParams();
 
-  function updateSendButton() {
+  function updateUI() {
+    // Set status text
+    if (playerId != null) {
+      statusBar.textContent = myTurn
+        ? `Your turn (Player ${playerId})`
+        : `Waiting for Player ${currentPlayer}`;
+    }
+    // Enable/disable controls
     sendBtn.disabled = !myTurn;
+    actionSelect.disabled = !myTurn;
+    actionParams.querySelectorAll('input').forEach(i => { i.disabled = !myTurn; });
+    // Show or hide overlay
+    overlay.style.visibility = myTurn ? 'hidden' : 'visible';
   }
 
   sendBtn.addEventListener('click', () => {
@@ -114,15 +159,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       const v = document.getElementById(`param-${k}`).value;
       payload[k] = typeof tmpl[k] === 'number' ? parseFloat(v) : v;
     });
-    socket.send(
-      JSON.stringify({
-        type: 'ACTION',
-        player_id: playerId,
-        action: payload,
-      }),
-    );
+    socket.send(JSON.stringify({ type: 'ACTION', player_id: playerId, action: payload }));
     myTurn = false;
-    updateSendButton();
+    updateUI();
   });
 
   window.addEventListener('resize', () => {
@@ -134,12 +173,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   function drawEnvironment(env) {
     content.removeChildren();
     const { map, worms = [] } = env;
-
     const rows = map.length;
     const cols = map[0].length;
     const W = app.renderer.screen.width;
     const H = app.renderer.screen.height;
-
     const tileSize = Math.min(W / cols, H / rows);
     const xMargin = (W - tileSize * cols) / 2;
     const yMargin = (H - tileSize * rows) / 2;
