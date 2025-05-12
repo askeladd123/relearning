@@ -5,6 +5,7 @@ let playerId = null;
 let myTurn = false;
 
 document.addEventListener('DOMContentLoaded', async () => {
+  // ---------- PIXI ----------------------------------------------------
   const app = new Application();
   const canvasHeight = 400;
   await app.init({
@@ -17,14 +18,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   const content = new Container();
   app.stage.addChild(content);
 
+  // ---------- Action presets ------------------------------------------
   const ACTIONS = [
     { action: 'stand' },
-    { action: 'walk', 'amount-x': 12.0 },
+    { action: 'walk', dx: 1.0 },
     { action: 'attack', weapon: 'kick', force: 70.0 },
-    { action: 'attack', weapon: 'bazooka', angle: 120.0 },
-    { action: 'attack', weapon: 'grenade', angle: 15.0, force: 50.0 },
+    { action: 'attack', weapon: 'bazooka', angle_deg: 120.0 },
+    { action: 'attack', weapon: 'grenade', angle_deg: 15.0, force: 50.0 },
   ];
 
+  // ---------- WebSocket -----------------------------------------------
   const socket = new WebSocket('ws://127.0.0.1:8765');
 
   socket.addEventListener('open', () => {
@@ -37,7 +40,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     switch (msg.type) {
       case 'ASSIGN_ID':
         playerId = msg.player_id;
-        console.log('Assigned ID', playerId);
         break;
       case 'TURN_BEGIN':
         myTurn = msg.player_id === playerId;
@@ -57,17 +59,17 @@ document.addEventListener('DOMContentLoaded', async () => {
         break;
       case 'ERROR':
         console.error(msg.msg);
-        myTurn = false;
         break;
     }
     updateSendButton();
   });
 
-  /* ---------- UI ---------- */
+  // ---------- UI -------------------------------------------------------
   const actionSelect = document.getElementById('action-select');
   const actionParams = document.getElementById('action-params');
   const sendBtn = document.getElementById('send-action');
 
+  // Populate dropdown
   ACTIONS.forEach((a, i) => {
     const opt = document.createElement('option');
     let label = a.action;
@@ -77,7 +79,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     actionSelect.appendChild(opt);
   });
 
-  const buildParams = () => {
+  function buildParams() {
     actionParams.innerHTML = '';
     const tmpl = ACTIONS[actionSelect.value];
     Object.keys(tmpl).forEach((k) => {
@@ -95,14 +97,13 @@ document.addEventListener('DOMContentLoaded', async () => {
       group.appendChild(inp);
       actionParams.appendChild(group);
     });
-  };
-
+  }
   actionSelect.addEventListener('change', buildParams);
   buildParams();
 
-  const updateSendButton = () => {
+  function updateSendButton() {
     sendBtn.disabled = !myTurn;
-  };
+  }
 
   sendBtn.addEventListener('click', () => {
     if (!myTurn) return;
@@ -129,33 +130,41 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (lastEnv) drawEnvironment(lastEnv);
   });
 
+  // ---------- Rendering -----------------------------------------------
   function drawEnvironment(env) {
     content.removeChildren();
-    const map = env.map;
-    const worms = env.worms || [];
+    const { map, worms = [] } = env;
 
     const rows = map.length;
     const cols = map[0].length;
     const W = app.renderer.screen.width;
     const H = app.renderer.screen.height;
-    const size = Math.min(W / cols, H / rows);
-    const xMargin = (W - size * cols) / 2;
-    const yMargin = (H - size * rows) / 2;
 
+    const tileSize = Math.min(W / cols, H / rows);
+    const xMargin = (W - tileSize * cols) / 2;
+    const yMargin = (H - tileSize * rows) / 2;
+
+    // Draw terrain
     map.forEach((row, y) => {
       row.forEach((cell, x) => {
         const g = new Graphics();
         g.beginFill(cell === 1 ? 0x000000 : 0x1099bb);
-        g.drawRect(xMargin + x * size, yMargin + y * size, size, size);
+        g.drawRect(
+          xMargin + x * tileSize,
+          yMargin + y * tileSize,
+          tileSize,
+          tileSize,
+        );
         g.endFill();
         content.addChild(g);
       });
     });
 
+    // Draw worms (world‑unit coords)
     worms.forEach((w) => {
-      const cx = xMargin + w.x * size;
-      const cy = yMargin + w.y * size;
-      const r = size * 0.4;
+      const cx = xMargin + w.x * tileSize;
+      const cy = yMargin + w.y * tileSize;
+      const r = tileSize * 0.4;
       const c = new Graphics();
       c.beginFill(0xff0000);
       c.drawCircle(cx, cy, r);

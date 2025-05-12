@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+"""Simple random bot for W.O.R.M.S."""
 import asyncio
 import json
 import random
@@ -5,12 +7,13 @@ import random
 import websockets
 
 HOST, PORT = "127.0.0.1", 8765
+
 ACTIONS = [
     {"action": "stand"},
-    {"action": "walk", "amount-x": 12.0},
+    {"action": "walk", "dx": 1.0},
     {"action": "attack", "weapon": "kick", "force": 70.0},
-    {"action": "attack", "weapon": "bazooka", "angle": 120.0},
-    {"action": "attack", "weapon": "grenade", "angle": 15.0, "force": 50.0},
+    {"action": "attack", "weapon": "bazooka", "angle_deg": 90.0},
+    {"action": "attack", "weapon": "grenade", "angle_deg": 30.0, "force": 50.0},
 ]
 
 
@@ -21,7 +24,6 @@ async def start_client() -> None:
         player_id: int | None = None
         async for message in ws:
             msg = json.loads(message)
-            print("←", msg)
             t = msg.get("type")
             if t == "ASSIGN_ID":
                 player_id = msg["player_id"]
@@ -37,7 +39,6 @@ async def start_client() -> None:
                         }
                     )
                 )
-                print("→ ACTION", action)
 
 
 if __name__ == "__main__":
