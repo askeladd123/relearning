@@ -1,0 +1,1618 @@
+Prosjektstruktur og filinnhold (fra mappen: C:\Users\kriny\andre_fag\pattern_recognition\Directory\relearning)
+
+Skriptet 'all.py' og outputfilen 'prosjekt_struktur_og_innhold.txt' er ekskludert.
+Følgende mappenavn blir også fullstendig ignorert (i tillegg til andre skjulte mapper som starter med '.'): .git, __pycache__, .vscode, .idea, venv, env, .venv, node_modules
+
+================================================================================
+
+    |-- plan.md
+        --- START INNHOLD (plan.md) ---
+        - **learn**: runs and saves state of environment
+        - **data**: saved here
+        - **frontend**: reads data and plays it in a browser
+        --- SLUTT INNHOLD (plan.md) ---
+
+agents/
+    |-- __init__.py
+        [--- INNHOLD: Tom fil ---]
+
+    |-- client.py
+        --- START INNHOLD (client.py) ---
+        import asyncio
+        import json
+        import random
+        
+        import websockets
+        
+        HOST, PORT = "127.0.0.1", 8765
+        ACTIONS = [
+            {"action": "stand"},
+            {"action": "walk", "amount-x": 12.0},
+            {"action": "attack", "weapon": "kick", "force": 70.0},
+            {"action": "attack", "weapon": "bazooka", "angle": 120.0},
+            {"action": "attack", "weapon": "grenade", "angle": 15.0, "force": 50.0},
+        ]
+        
+        
+        async def start_client() -> None:
+            uri = f"ws://{HOST}:{PORT}"
+            async with websockets.connect(uri) as ws:
+                await ws.send(json.dumps({"type": "CONNECT", "nick": "bot"}))
+                player_id: int | None = None
+                async for message in ws:
+                    msg = json.loads(message)
+                    print("←", msg)
+                    t = msg.get("type")
+                    if t == "ASSIGN_ID":
+                        player_id = msg["player_id"]
+                        continue
+                    if t == "TURN_BEGIN" and msg["player_id"] == player_id:
+                        action = random.choice(ACTIONS)
+                        await ws.send(
+                            json.dumps(
+                                {
+                                    "type": "ACTION",
+                                    "player_id": player_id,
+                                    "action": action,
+                                }
+                            )
+                        )
+                        print("→ ACTION", action)
+        
+        
+        if __name__ == "__main__":
+            asyncio.run(start_client())
+        --- SLUTT INNHOLD (client.py) ---
+
+    a2c_manual/
+        |-- __init__.py
+            [--- INNHOLD: Tom fil ---]
+
+        |-- agent.py
+            --- START INNHOLD (agent.py) ---
+            # agents/a2c_manual/agent.py
+            import torch
+            import torch.optim as optim
+            from torch.distributions import Categorical, Normal
+            import numpy as np
+            
+            from . import config
+            from .model import ActorCriticNetwork
+            from .utils import preprocess_state, format_action
+            
+            class A2CAgent:
+                def __init__(self):
+                    self.network = ActorCriticNetwork().to(config.DEVICE)
+                    self.optimizer = optim.Adam(self.network.parameters(), lr=config.LEARNING_RATE)
+            
+                    self.log_probs = []  # For lagring av log-sannsynligheter for policy gradient
+                    self.values = []     # For lagring av state values fra critic
+                    self.rewards = []    # For lagring av mottatte rewards
+                    self.entropies = []  # For lagring av entropi for exploration bonus
+            
+                def select_action(self, environment_json):
+                    """ Velger en handling basert på state og returnerer action JSON + lagrer for læring """
+                    map_tensor, worm_vector_tensor = preprocess_state(environment_json)
+            
+                    # Få outputs fra nettverket
+                    actor_outputs, state_value = self.network(map_tensor, worm_vector_tensor)
+                    self.values.append(state_value) # Lagre V(s) for critic loss
+            
+                    # --- Action Type Selection ---
+                    action_probs = actor_outputs['action_probs']
+                    action_dist = Categorical(action_probs)
+                    action_type_idx = action_dist.sample()
+                    self.log_probs.append(action_dist.log_prob(action_type_idx))
+                    self.entropies.append(action_dist.entropy())
+            
+                    action_name = config.ACTION_LIST[action_type_idx.item()]
+                    selected_params = {}
+            
+                    # --- Parameter Selection (basert på valgt action type) ---
+                    total_entropy = action_dist.entropy() # Start med entropi fra action type
+            
+                    if action_name == 'walk':
+                        walk_probs = actor_outputs['walk_amount_probs']
+                        walk_dist = Categorical(walk_probs)
+                        walk_amount_idx = walk_dist.sample()
+                        selected_params['walk_amount'] = walk_amount_idx.item()
+                        self.log_probs.append(walk_dist.log_prob(walk_amount_idx))
+                        total_entropy += walk_dist.entropy()
+            
+                    elif action_name == 'kick':
+                        mean, std = actor_outputs['kick_params']
+                        kick_dist = Normal(mean, std)
+                        kick_force = kick_dist.sample()
+                        # Clip force til et fornuftig område? Må diskuteres med Ask.
+                        # kick_force = torch.clamp(kick_force, min_force, max_force)
+                        selected_params['kick_force'] = kick_force.item()
+                        self.log_probs.append(kick_dist.log_prob(kick_force).sum()) # Sum for multi-dim Normal? Her 1D
+                        total_entropy += kick_dist.entropy().sum()
+            
+                    elif action_name == 'bazooka':
+                        angle_mean, angle_std, force_mean, force_std = actor_outputs['bazooka_params']
+                        # Angle
+                        angle_dist = Normal(angle_mean, angle_std)
+                        bazooka_angle = angle_dist.sample()
+                        # bazooka_angle = torch.clamp(bazooka_angle, min_angle, max_angle)
+                        selected_params['bazooka_angle'] = bazooka_angle.item()
+                        self.log_probs.append(angle_dist.log_prob(bazooka_angle).sum())
+                        total_entropy += angle_dist.entropy().sum()
+                        # Force
+                        force_dist = Normal(force_mean, force_std)
+                        bazooka_force = force_dist.sample()
+                        # bazooka_force = torch.clamp(bazooka_force, min_force, max_force)
+                        selected_params['bazooka_force'] = bazooka_force.item()
+                        self.log_probs.append(force_dist.log_prob(bazooka_force).sum())
+                        total_entropy += force_dist.entropy().sum()
+            
+                    elif action_name == 'grenade':
+                        angle_mean, angle_std, force_mean, force_std = actor_outputs['grenade_params']
+                        # Angle
+                        angle_dist = Normal(angle_mean, angle_std)
+                        grenade_angle = angle_dist.sample()
+                        # grenade_angle = torch.clamp(grenade_angle, min_angle, max_angle)
+                        selected_params['grenade_angle'] = grenade_angle.item()
+                        self.log_probs.append(angle_dist.log_prob(grenade_angle).sum())
+                        total_entropy += angle_dist.entropy().sum()
+                        # Force
+                        force_dist = Normal(force_mean, force_std)
+                        grenade_force = force_dist.sample()
+                        # grenade_force = torch.clamp(grenade_force, min_force, max_force)
+                        selected_params['grenade_force'] = grenade_force.item()
+                        self.log_probs.append(force_dist.log_prob(grenade_force).sum())
+                        total_entropy += force_dist.entropy().sum()
+            
+                    self.entropies.append(total_entropy) # Lagre total entropi for dette steget
+            
+                    # Formater action til JSON
+                    action_json = format_action(action_type_idx.item(), selected_params)
+            
+                    return action_json
+            
+                def store_reward(self, reward):
+                    """ Lagrer mottatt reward. """
+                    self.rewards.append(reward)
+            
+                def learn(self, next_environment_json, done):
+                    """ Utfører A2C læringssteget etter en episode eller et antall steg. """
+                    if not self.log_probs: # Ingen handlinger tatt ennå
+                        return
+            
+                    # Beregn siste state value (V(s_T))
+                    # Hvis 'done', er verdien 0. Ellers, estimer med critic.
+                    if done:
+                        R = torch.tensor([0.0]).to(config.DEVICE)
+                    else:
+                        # Få verdien av *neste* state for bootstrapping
+                        next_map, next_worm = preprocess_state(next_environment_json)
+                        with torch.no_grad(): # Ingen gradient nødvendig her
+                             _, next_value = self.network(next_map, next_worm)
+                             R = next_value.squeeze() # Bruk critic'ens estimat for neste state
+            
+                    # Beregn discounted returns (Gt) og advantages (At)
+                    returns = []
+                    advantages = []
+                    gae = 0 # Generalized Advantage Estimation (kan starte enkelt med A=G-V)
+            
+                    # Regn ut returns baklengs
+                    for r, v in zip(reversed(self.rewards), reversed(self.values)):
+                        R = r + config.GAMMA * R # R blir Gt for dette steget
+                        returns.insert(0, R)
+            
+                    returns = torch.tensor(returns).to(config.DEVICE)
+                    values_tensor = torch.cat(self.values).squeeze() # Gjør om listen av V(s) til en tensor
+            
+                    # Enkel Advantage: A(s,a) = Gt - V(s)
+                    advantages = returns - values_tensor
+                    # Normaliser advantages (ofte lurt for stabilitet)
+                    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8) # Pass på deling på 0
+            
+            
+                    # Beregn Policy Loss (Actor Loss)
+                    # Negativ fordi vi bruker gradient ascent (maksimering), men optimizers minimerer.
+                    policy_loss = []
+                    for log_prob, adv in zip(self.log_probs, advantages.detach()): # .detach() for ikke å backprop'e gjennom advantage
+                        policy_loss.append(-log_prob * adv)
+                    policy_loss = torch.stack(policy_loss).sum() # Stack og summer
+            
+                    # Beregn Value Loss (Critic Loss)
+                    # Hvor godt estimerte critic'en Gt?
+                    value_loss = F.mse_loss(values_tensor, returns.detach()) # .detach() på returns
+            
+                    # Beregn Entropy Bonus (for exploration)
+                    entropy_loss = -torch.stack(self.entropies).mean() # Gjennomsnittlig entropi, negativ for maksimering
+            
+                    # Total Loss
+                    # Vi vil maksimere policy reward og entropi, og minimere value loss.
+                    total_loss = policy_loss + config.VALUE_LOSS_COEF * value_loss + config.ENTROPY_COEF * entropy_loss
+            
+                    # Backpropagation
+                    self.optimizer.zero_grad()
+                    total_loss.backward()
+                    # Gradient Clipping (valgfritt, men ofte nyttig for stabilitet)
+                    # torch.nn.utils.clip_grad_norm_(self.network.parameters(), max_norm=0.5)
+                    self.optimizer.step()
+            
+                    # Tøm lagrede data for neste læringssteg/episode
+                    self.log_probs = []
+                    self.values = []
+                    self.rewards = []
+                    self.entropies = []
+            
+                    # Returner tap for logging/plotting
+                    return policy_loss.item(), value_loss.item(), entropy_loss.item()
+            --- SLUTT INNHOLD (agent.py) ---
+
+        |-- config.py
+            --- START INNHOLD (config.py) ---
+            # agents/a2c_manual/config.py
+            import torch
+            
+            # ---- Viktig: Disse må kanskje justeres etter diskusjon med Ask ----
+            # Kartdimensjoner (Eksempel - BRUK VERDIER FRA ASK!)
+            MAP_WIDTH = 250  # Eksempel basert på Ask sin kommentar
+            MAP_HEIGHT = 250 # Eksempel basert på Ask sin kommentar
+            # Antall Worms per lag (eller totalt hvis free-for-all) - Trenger avklaring
+            NUM_WORMS = 3 # Eksempel basert på environment.json
+            
+            # Maks verdier for normalisering (Eksempel - trenger justering)
+            MAX_WORM_HEALTH = 100.0
+            MAX_X_POS = MAP_WIDTH -1
+            MAX_Y_POS = MAP_HEIGHT -1
+            # ------------------------------------------------------------------
+            
+            # Modell Dimensjoner
+            # Input til CNN (1 kanal for kartet)
+            CNN_INPUT_CHANNELS = 1
+            # Output fra CNN (etter flattening, juster basert på CNN-arkitektur)
+            CNN_FEATURE_DIM = 256 # Eksempel, avhenger av Conv/Pool lag
+            # Dimensjon på worm-vektor (id?, health, x, y for *alle* worms)
+            # (id [one-hot?], health, x, y) * NUM_WORMS? Eller bare health,x,y? La oss starte enkelt:
+            # health, x, y for *egen* orm + health, x, y for *alle andre* ormer?
+            # Enkleste start: Kun egen health, x, y (normalisert)
+            # Må avklares med Ask hvordan AI vet *hvilken* orm den styrer
+            WORM_VECTOR_DIM = 3 # Kun health, x, y for aktiv orm
+            # Total input til FC-lag etter CNN og konkatinering
+            COMBINED_FEATURE_DIM = CNN_FEATURE_DIM + WORM_VECTOR_DIM
+            
+            # Action Space Definisjoner
+            ACTION_LIST = ['stand', 'walk', 'kick', 'bazooka', 'grenade']
+            ACTION_DIM = len(ACTION_LIST) # Antall diskrete handlinger
+            
+            # Parameter Space (Eksempler - Må defineres nøyere!)
+            WALK_AMOUNT_BINS = 11 # F.eks., diskrete steg fra -5 til +5
+            KICK_FORCE_PARAMS = 2  # F.eks., mean og std dev for Gaussian
+            BAZOOKA_ANGLE_PARAMS = 2 # F.eks., mean og std dev
+            BAZOOKA_FORCE_PARAMS = 2 # F.eks., mean og std dev
+            GRENADE_ANGLE_PARAMS = 2 # F.eks., mean og std dev
+            GRENADE_FORCE_PARAMS = 2 # F.eks., mean og std dev
+            
+            # Hyperparametre for A2C
+            LEARNING_RATE = 0.001
+            GAMMA = 0.99  # Discount factor for fremtidige belønninger
+            ENTROPY_COEF = 0.01 # Koeffisient for entropi-bonus (oppmuntrer utforskning)
+            VALUE_LOSS_COEF = 0.5 # Koeffisient for critic loss
+            
+            # Trening
+            NUM_EPISODES = 10000 # Antall spill-episoder å trene
+            
+            # Websocket
+            SERVER_HOST = '127.0.0.1' # Ask sin server IP
+            SERVER_PORT = 8765      # Ask sin server port
+            
+            # Annet
+            DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+            print(f"Using device: {DEVICE}")
+            --- SLUTT INNHOLD (config.py) ---
+
+        |-- main_a2c.py
+            --- START INNHOLD (main_a2c.py) ---
+            # agents/a2c_manual/main_a2c.py
+            import asyncio
+            import websockets
+            import json
+            import time
+            import torch # For å kunne laste/lagre modell
+            import numpy as np # For glidende gjennomsnitt
+            from .agent import A2CAgent
+            from . import config
+            
+            async def run_agent():
+                uri = f"ws://{config.SERVER_HOST}:{config.SERVER_PORT}"
+                a2c_agent = A2CAgent()
+                episode_count = 0
+                total_steps_across_episodes = 0
+                all_episode_rewards = []
+                losses_log = {'policy': [], 'value': [], 'entropy': []}
+            
+                checkpoint_path = "a2c_worms_checkpoint.pth"
+                try:
+                    a2c_agent.network.load_state_dict(torch.load(checkpoint_path, map_location=torch.device(config.DEVICE)))
+                    print(f"Lastet sjekkpunkt for modellen fra {checkpoint_path}.")
+                except FileNotFoundError:
+                    print(f"Ingen sjekkpunkt funnet på {checkpoint_path}, starter med ny modell.")
+                except Exception as e:
+                    print(f"Kunne ikke laste sjekkpunkt: {e}")
+            
+                print(f"Kobler til server på {uri}...")
+            
+                while episode_count < config.NUM_EPISODES:
+                    episode_reward = 0
+                    current_step_in_episode = 0
+                    done = False
+                    current_environment_json = None # Viktig å nullstille for hver episode
+            
+                    try:
+                        async with websockets.connect(uri, ping_interval=20, ping_timeout=20) as websocket:
+                            print(f"--- Episode {episode_count + 1}/{config.NUM_EPISODES} ---")
+                            print("Tilkoblet server.")
+            
+                            # 1. SEND EN INITIAL HANDLING FOR Å FÅ FØRSTE STATE
+                            initial_action_payload = {"action": "stand"} # Enkel start-handling
+                            print(f"Sender initial handling: {initial_action_payload}")
+                            await websocket.send(json.dumps(initial_action_payload))
+            
+                            # 2. MOTTA FØRSTE ENVIRONMENT ETTER INITIAL HANDLING
+                            print("Venter på første environment fra server...")
+                            initial_response_message = await websocket.recv()
+                            print(f"Mottok første respons: {initial_response_message[:200]}...") # Logg starten av responsen
+            
+                            try:
+                                current_environment_json = json.loads(initial_response_message)
+                                if 'new-environment' not in current_environment_json or \
+                                   'worms' not in current_environment_json.get('new-environment', {}) or \
+                                   'map' not in current_environment_json.get('new-environment', {}):
+                                    print("Ugyldig format på første environment (mangler nøkler). Hopper over episode.")
+                                    await asyncio.sleep(1)
+                                    episode_count += 1 # Tell som et forsøk
+                                    continue
+                            except json.JSONDecodeError:
+                                 print("Mottok ugyldig JSON som første environment. Hopper over episode.")
+                                 await asyncio.sleep(1)
+                                 episode_count += 1
+                                 continue
+                            except Exception as e:
+                                print(f"Uventet feil ved behandling av første environment: {e}. Hopper over episode.")
+                                await asyncio.sleep(1)
+                                episode_count += 1
+                                continue
+            
+                            # Episodeløkke
+                            while not done:
+                                print(f"Steg {current_step_in_episode + 1}: Nåværende state (start): {str(current_environment_json)[:100]}...")
+                                # 3. Agent velger handling basert på nåværende state
+                                action_to_send = a2c_agent.select_action(current_environment_json)
+            
+                                # 4. Send handling til server
+                                print(f"Sender handling: {action_to_send}")
+                                await websocket.send(json.dumps(action_to_send))
+            
+                                # 5. Motta resultat fra server
+                                print("Venter på respons fra server...")
+                                response_message = await websocket.recv()
+                                print(f"Mottok respons: {response_message[:200]}...")
+            
+                                try:
+                                    response_data = json.loads(response_message)
+                                except json.JSONDecodeError:
+                                    print("Mottok ugyldig JSON respons fra server. Avslutter episode.")
+                                    done = True
+                                    response_data = None
+                                except websockets.exceptions.ConnectionClosed:
+                                    print("Tilkobling lukket av server under spill. Avslutter episode.")
+                                    done = True
+                                    response_data = None
+            
+                                if response_data:
+                                    reward = response_data.get('score', 0)
+                                    # VIKTIG: Diskuter med Ask om 'score' er steg-reward eller total score.
+                                    # Hvis total score, må du beregne delta:
+                                    # prev_total_score = current_environment_json.get('score', 0) # Eller en annen måte å hente forrige
+                                    # step_reward = reward - prev_total_score
+                                    # For nå, anta 'score' er steg-reward
+                                    step_reward = reward
+            
+                                    done = response_data.get('finished', False)
+                                    next_environment_json = response_data
+            
+                                    a2c_agent.store_reward(step_reward)
+                                    episode_reward += step_reward
+            
+                                    current_environment_json = next_environment_json
+                                    current_step_in_episode += 1
+                                    total_steps_across_episodes += 1
+                                else: # Ingen responsdata, avslutt episoden
+                                    done = True
+            
+                                if done:
+                                    print(f"Episode {episode_count + 1} ferdig etter {current_step_in_episode} steg. Total belønning: {episode_reward}")
+                                    policy_l, value_l, entropy_l = a2c_agent.learn(current_environment_json, True)
+                                    if policy_l is not None:
+                                         losses_log['policy'].append(policy_l)
+                                         losses_log['value'].append(value_l)
+                                         losses_log['entropy'].append(entropy_l)
+                                         print(f"  Losses - Policy: {policy_l:.4f}, Value: {value_l:.4f}, Entropy (neg): {entropy_l:.4f}")
+                                    all_episode_rewards.append(episode_reward)
+            
+                                    if (episode_count + 1) % 50 == 0:
+                                        try:
+                                            torch.save(a2c_agent.network.state_dict(), checkpoint_path)
+                                            print(f"Lagret modell sjekkpunkt til {checkpoint_path} ved episode {episode_count + 1}")
+                                        except Exception as e_save:
+                                            print(f"Kunne ikke lagre modell: {e_save}")
+                                    break # Gå ut av while not done
+            
+                            episode_count += 1 # Øk etter at en episode er helt ferdig eller avbrutt og håndtert
+            
+                    except websockets.exceptions.ConnectionClosedOK:
+                        print(f"Tilkobling lukket (OK) av server for episode {episode_count +1}.")
+                        if a2c_agent.rewards and not done:
+                             print("Tilkobling lukket før episoden var 'finished'. Prøver å lære.")
+                             valid_last_state = current_environment_json if current_environment_json else {}
+                             policy_l, value_l, entropy_l = a2c_agent.learn(valid_last_state, True)
+                             if policy_l is not None:
+                                  losses_log['policy'].append(policy_l); losses_log['value'].append(value_l); losses_log['entropy'].append(entropy_l)
+                             all_episode_rewards.append(episode_reward)
+                             a2c_agent.log_probs, a2c_agent.values, a2c_agent.rewards, a2c_agent.entropies = [], [], [], []
+                        episode_count +=1
+                        await asyncio.sleep(1)
+            
+                    except websockets.exceptions.ConnectionClosedError as e:
+                        print(f"Tilkobling lukket med feil: {e} (Episode {episode_count+1}). Prøver igjen om 5s.")
+                        await asyncio.sleep(5)
+            
+                    except ConnectionRefusedError:
+                        print(f"Kunne ikke koble til serveren {uri}. Er serveren startet? Prøver igjen om 10s.")
+                        await asyncio.sleep(10)
+            
+                    except Exception as e:
+                        print(f"Uventet feil i episode {episode_count + 1}: {type(e).__name__} - {e}")
+                        if a2c_agent.rewards and not done:
+                            try:
+                                print("Uventet feil midt i episoden. Prøver å lære.")
+                                valid_last_state = current_environment_json if current_environment_json else {}
+                                policy_l, value_l, entropy_l = a2c_agent.learn(valid_last_state, True)
+                                if policy_l is not None:
+                                    losses_log['policy'].append(policy_l); losses_log['value'].append(value_l); losses_log['entropy'].append(entropy_l)
+                                all_episode_rewards.append(episode_reward)
+                            except Exception as learn_e:
+                                print(f"Feil under læring etter feil: {learn_e}")
+                            finally:
+                                a2c_agent.log_probs, a2c_agent.values, a2c_agent.rewards, a2c_agent.entropies = [], [], [], []
+                        episode_count +=1
+                        print("Prøver å fortsette eller koble til på nytt om 5s...")
+                        await asyncio.sleep(5)
+            
+                print("Trening ferdig.")
+                try:
+                    import matplotlib.pyplot as plt
+                    # Beregn glidende gjennomsnitt for rewards
+                    avg_rewards = []
+                    if all_episode_rewards: # Sjekk at listen ikke er tom
+                        window_size = min(100, len(all_episode_rewards)) # Unngå feil hvis færre enn 100 episoder
+                        avg_rewards = [np.mean(all_episode_rewards[max(0, i - window_size + 1):i + 1]) for i in range(len(all_episode_rewards))]
+            
+            
+                    plt.figure(figsize=(18, 6))
+                    plt.subplot(1, 3, 1)
+                    plt.plot(all_episode_rewards, label='Rå belønning', alpha=0.6)
+                    if avg_rewards: plt.plot(avg_rewards, label=f'Glidende gj.snitt ({window_size} ep)', color='red', linewidth=2)
+                    plt.xlabel("Episode")
+                    plt.ylabel("Total belønning")
+                    plt.title("Belønning per episode")
+                    plt.legend()
+                    plt.grid(True)
+            
+                    if losses_log['policy']:
+                        plt.subplot(1, 3, 2)
+                        plt.plot(losses_log['policy'], label='Policy Loss')
+                        plt.xlabel("Læringssteg (episoder)")
+                        plt.ylabel("Policy Loss")
+                        plt.title("Policy (Actor) Tap")
+                        plt.legend()
+                        plt.grid(True)
+            
+                        plt.subplot(1, 3, 3)
+                        plt.plot(losses_log['value'], label='Value Loss', color='green')
+                        plt.xlabel("Læringssteg (episoder)")
+                        plt.ylabel("Value Loss")
+                        plt.title("Value (Critic) Tap")
+                        plt.legend()
+                        plt.grid(True)
+            
+                    plt.tight_layout()
+                    plt.savefig("training_plots_worms.png")
+                    print("Lagret treningsplot som training_plots_worms.png")
+                    # plt.show() # Vurder å kommentere ut plt.show() hvis du kjører mange tester uten interaksjon
+                except ImportError:
+                    print("Matplotlib ikke installert. Kan ikke plotte resultater.")
+                except Exception as plot_e:
+                    print(f"Kunne ikke plotte resultater: {type(plot_e).__name__} - {plot_e}")
+            
+            if __name__ == "__main__":
+                asyncio.run(run_agent())
+            --- SLUTT INNHOLD (main_a2c.py) ---
+
+        |-- model.py
+            --- START INNHOLD (model.py) ---
+            # agents/a2c_manual/model.py
+            import torch
+            import torch.nn as nn
+            import torch.nn.functional as F
+            from torch.distributions import Categorical, Normal
+            from . import config
+            
+            class ActorCriticNetwork(nn.Module):
+                def __init__(self):
+                    super(ActorCriticNetwork, self).__init__()
+            
+                    # --- CNN for Map Processing ---
+                    # Eksempel arkitektur - kan justeres kraftig
+                    self.conv1 = nn.Conv2d(config.CNN_INPUT_CHANNELS, 16, kernel_size=8, stride=4) # Output: [B, 16, H', W']
+                    self.conv2 = nn.Conv2d(16, 32, kernel_size=4, stride=2)                      # Output: [B, 32, H'', W'']
+                    # Beregn størrelsen etter conv-lagene for flattening
+                    # Dette må gjøres manuelt eller dynamisk basert på input-størrelse
+                    # Anta 250x250 input for eksempelberegning:
+                    # Etter conv1 (stride 4): H' = floor((250-8)/4 + 1) = 61, W' = 61 => (16, 61, 61)
+                    # Etter conv2 (stride 2): H'' = floor((61-4)/2 + 1) = 29, W'' = 29 => (32, 29, 29)
+                    # Man må kanskje legge til pooling lag også.
+                    # La oss anta output etter convs (og evt pooling/flatten) er config.CNN_FEATURE_DIM
+                    # For et konkret eksempel, anta at output er (32 * 29 * 29) hvis ingen pooling.
+                    # self.cnn_output_size = 32 * 29 * 29 # Eksempel
+                    # La oss bruke en AdaptiveMaxPool2d for å få fast størrelse uansett input
+                    self.pool = nn.AdaptiveMaxPool2d((6, 6)) # Output: [B, 32, 6, 6]
+                    self.cnn_output_size = 32 * 6 * 6         # = 1152. La config.CNN_FEATURE_DIM være dette.
+                    # Juster config.CNN_FEATURE_DIM til 1152 eller juster arkitekturen
+            
+                    # --- Felles Fullt Tilkoblede Lag ---
+                    self.fc_shared1 = nn.Linear(self.cnn_output_size + config.WORM_VECTOR_DIM, 256) # Kombinerer CNN og worm data
+                    self.fc_shared2 = nn.Linear(256, 128)
+            
+                    # --- Actor Hoder ---
+                    # 1. Hode for diskret action type (stand, walk, kick, etc.)
+                    self.action_head = nn.Linear(128, config.ACTION_DIM)
+            
+                    # 2. Hoder for parametere (kun relevant for visse actions)
+                    #    Vi lager separate hoder for hver parameter type
+            
+                    # Walk amount (antar diskrete bins)
+                    self.walk_amount_head = nn.Linear(128, config.WALK_AMOUNT_BINS)
+            
+                    # Kick force (antar kontinuerlig - output mean og std dev)
+                    self.kick_force_mean_head = nn.Linear(128, 1)
+                    self.kick_force_log_std_head = nn.Linear(128, 1) # Log std for stabilitet
+            
+                    # Bazooka angle (kontinuerlig)
+                    self.bazooka_angle_mean_head = nn.Linear(128, 1)
+                    self.bazooka_angle_log_std_head = nn.Linear(128, 1)
+                    # Bazooka force (kontinuerlig)
+                    self.bazooka_force_mean_head = nn.Linear(128, 1)
+                    self.bazooka_force_log_std_head = nn.Linear(128, 1)
+            
+                    # Grenade angle (kontinuerlig)
+                    self.grenade_angle_mean_head = nn.Linear(128, 1)
+                    self.grenade_angle_log_std_head = nn.Linear(128, 1)
+                    # Grenade force (kontinuerlig)
+                    self.grenade_force_mean_head = nn.Linear(128, 1)
+                    self.grenade_force_log_std_head = nn.Linear(128, 1)
+            
+            
+                    # --- Critic Hode ---
+                    self.value_head = nn.Linear(128, 1) # Outputter state value V(s)
+            
+                def forward(self, map_tensor, worm_vector_tensor):
+                    # CNN
+                    # print("Map tensor shape:", map_tensor.shape) # Debugging shape
+                    x_map = F.relu(self.conv1(map_tensor))
+                    x_map = F.relu(self.conv2(x_map))
+                    x_map = self.pool(x_map)
+                    x_map = x_map.view(x_map.size(0), -1) # Flatten
+            
+                    # Kombiner med worm data
+                    # print("CNN output shape:", x_map.shape) # Debugging shape
+                    # print("Worm vector shape:", worm_vector_tensor.shape) # Debugging shape
+                    x_combined = torch.cat((x_map, worm_vector_tensor), dim=1)
+            
+                    # Felles lag
+                    x = F.relu(self.fc_shared1(x_combined))
+                    x = F.relu(self.fc_shared2(x))
+            
+                    # --- Actor Outputs ---
+                    action_logits = self.action_head(x)
+                    action_probs = F.softmax(action_logits, dim=-1)
+            
+                    walk_amount_logits = self.walk_amount_head(x)
+                    walk_amount_probs = F.softmax(walk_amount_logits, dim=-1)
+            
+                    kick_force_mean = self.kick_force_mean_head(x)
+                    kick_force_log_std = self.kick_force_log_std_head(x)
+                    kick_force_std = torch.exp(kick_force_log_std) # Sørger for positiv std dev
+            
+                    bazooka_angle_mean = self.bazooka_angle_mean_head(x)
+                    bazooka_angle_log_std = self.bazooka_angle_log_std_head(x)
+                    bazooka_angle_std = torch.exp(bazooka_angle_log_std)
+            
+                    bazooka_force_mean = self.bazooka_force_mean_head(x)
+                    bazooka_force_log_std = self.bazooka_force_log_std_head(x)
+                    bazooka_force_std = torch.exp(bazooka_force_log_std)
+            
+                    grenade_angle_mean = self.grenade_angle_mean_head(x)
+                    grenade_angle_log_std = self.grenade_angle_log_std_head(x)
+                    grenade_angle_std = torch.exp(grenade_angle_log_std)
+            
+                    grenade_force_mean = self.grenade_force_mean_head(x)
+                    grenade_force_log_std = self.grenade_force_log_std_head(x)
+                    grenade_force_std = torch.exp(grenade_force_log_std)
+            
+                    # Pakk actor outputs i en dict
+                    actor_outputs = {
+                        'action_probs': action_probs,
+                        'walk_amount_probs': walk_amount_probs,
+                        'kick_params': (kick_force_mean, kick_force_std),
+                        'bazooka_params': (bazooka_angle_mean, bazooka_angle_std, bazooka_force_mean, bazooka_force_std),
+                        'grenade_params': (grenade_angle_mean, grenade_angle_std, grenade_force_mean, grenade_force_std)
+                    }
+            
+                    # --- Critic Output ---
+                    state_value = self.value_head(x)
+            
+                    return actor_outputs, state_value
+            --- SLUTT INNHOLD (model.py) ---
+
+        |-- utils.py
+            --- START INNHOLD (utils.py) ---
+            # agents/a2c_manual/utils.py
+            import torch
+            import numpy as np
+            from . import config
+            
+            def preprocess_state(environment_json):
+                """
+                Konverterer rå environment JSON til tensorer klar for nettverket.
+                Returnerer en tuple: (map_tensor, worm_vector_tensor)
+                """
+                try:
+                    env_data = environment_json['new-environment']
+                    map_data = env_data['map']
+                    worms_data = env_data['worms']
+            
+                    # --- Kart Preprocessing ---
+                    # Anta map_data er en liste av lister
+                    map_array = np.array(map_data, dtype=np.float32)
+            
+                    # Resize/Pad kartet til fast størrelse (config.MAP_HEIGHT, config.MAP_WIDTH)
+                    # Dette er en enkel padding-metode, mer avansert resizing kan være nødvendig
+                    current_h, current_w = map_array.shape
+                    padded_map = np.zeros((config.MAP_HEIGHT, config.MAP_WIDTH), dtype=np.float32)
+                    # Senterer det mindre kartet i det større null-fylte kartet
+                    pad_h_start = (config.MAP_HEIGHT - current_h) // 2
+                    pad_w_start = (config.MAP_WIDTH - current_w) // 2
+                    pad_h_end = pad_h_start + current_h
+                    pad_w_end = pad_w_start + current_w
+            
+                    # Sikrer at indekser er innenfor grensene
+                    if pad_h_start >= 0 and pad_h_end <= config.MAP_HEIGHT and \
+                       pad_w_start >= 0 and pad_w_end <= config.MAP_WIDTH:
+                         padded_map[pad_h_start:pad_h_end, pad_w_start:pad_w_end] = map_array[:config.MAP_HEIGHT-pad_h_start, :config.MAP_WIDTH-pad_w_start]
+                    else:
+                         # Fallback hvis originalt kart er større enn definert config-størrelse
+                         padded_map = map_array[:config.MAP_HEIGHT, :config.MAP_WIDTH]
+            
+            
+                    # Legg til en kanal-dimensjon for CNN (C, H, W)
+                    map_tensor = torch.from_numpy(padded_map).unsqueeze(0).unsqueeze(0).to(config.DEVICE) # Shape: [1, 1, H, W]
+            
+                    # --- Worm Data Preprocessing ---
+                    # VIKTIG: Anta at AI styrer worm med id 0 for nå. Må avklares med Ask!
+                    # Hvordan vet AI hvilken orm som er aktiv? Får den en ID?
+                    # For nå, antar vi at ormen AI styrer er den første i listen med health > 0
+                    active_worm = None
+                    other_worms_features = []
+            
+                    # Finn den aktive ormen (første levende)
+                    for worm in worms_data:
+                        if worm['health'] > 0 and active_worm is None:
+                             active_worm = worm
+                             break # Styrer kun en om gangen per design nå
+            
+                    if active_worm is None and worms_data: # Hvis ingen er levende, ta data fra den første (døde)
+                        active_worm = worms_data[0]
+                    elif active_worm is None: # Hvis ingen ormer finnes
+                         # Returner null-vektor hvis ingen ormer finnes
+                         worm_vector_tensor = torch.zeros(1, config.WORM_VECTOR_DIM).to(config.DEVICE)
+                         return map_tensor, worm_vector_tensor
+            
+                    # Normaliser aktiv orm data
+                    norm_health = active_worm['health'] / config.MAX_WORM_HEALTH
+                    norm_x = active_worm['x'] / config.MAX_X_POS
+                    norm_y = active_worm['y'] / config.MAX_Y_POS
+            
+                    worm_features = [norm_health, norm_x, norm_y]
+            
+                    # TODO (Avansert): Inkluder info om *andre* ormer også?
+                    # for worm in worms_data:
+                    #    if worm['id'] != active_worm['id']:
+                    #       # Legg til normaliserte data for andre ormer
+                    #       pass
+            
+                    worm_vector_tensor = torch.FloatTensor([worm_features]).to(config.DEVICE) # Shape: [1, WORM_VECTOR_DIM]
+            
+                    return map_tensor, worm_vector_tensor
+            
+                except KeyError as e:
+                    print(f"Error preprocessing state: Missing key {e} in JSON: {environment_json}")
+                    # Returner dummy tensors ved feil
+                    dummy_map = torch.zeros(1, config.CNN_INPUT_CHANNELS, config.MAP_HEIGHT, config.MAP_WIDTH).to(config.DEVICE)
+                    dummy_worm = torch.zeros(1, config.WORM_VECTOR_DIM).to(config.DEVICE)
+                    return dummy_map, dummy_worm
+                except Exception as e:
+                    print(f"An unexpected error occurred during preprocessing: {e}")
+                    # Returner dummy tensors ved feil
+                    dummy_map = torch.zeros(1, config.CNN_INPUT_CHANNELS, config.MAP_HEIGHT, config.MAP_WIDTH).to(config.DEVICE)
+                    dummy_worm = torch.zeros(1, config.WORM_VECTOR_DIM).to(config.DEVICE)
+                    return dummy_map, dummy_worm
+            
+            
+            def format_action(action_type_idx, params):
+                """ Formaterer valgt handling og parametere til JSON for serveren. """
+                action_name = config.ACTION_LIST[action_type_idx]
+                action_json = {"action": action_name}
+            
+                if action_name == 'walk':
+                    # Konverter bin index tilbake til en verdi, f.eks. (-5 til +5)
+                    amount = params['walk_amount'] - (config.WALK_AMOUNT_BINS // 2)
+                    action_json['amount-x'] = float(amount) # Sørg for float
+                elif action_name == 'kick':
+                    action_json['weapon'] = 'kick'
+                    action_json['force'] = float(params['kick_force']) # Sørg for float
+                elif action_name == 'bazooka':
+                    action_json['weapon'] = 'bazooka'
+                    action_json['angle'] = float(params['bazooka_angle']) # Sørg for float
+                    action_json['force'] = float(params['bazooka_force']) # Sørg for float
+                elif action_name == 'grenade':
+                    action_json['weapon'] = 'grenade'
+                    action_json['angle'] = float(params['grenade_angle']) # Sørg for float
+                    action_json['force'] = float(params['grenade_force']) # Sørg for float
+                # 'stand' trenger ingen ekstra parametere
+            
+                # Viktig: Sjekk at datatyper (float vs int) stemmer med hva Ask forventer!
+                return action_json
+            --- SLUTT INNHOLD (utils.py) ---
+
+environment/
+    |-- game_core.py
+        --- START INNHOLD (game_core.py) ---
+        # Pure game logic (no networking)
+        
+        from typing import Any, Dict, Tuple
+        
+        
+        class GameCore:
+            def __init__(self) -> None:
+                self.state: Dict[str, Any] = self.initial_state()
+        
+            def initial_state(self) -> Dict[str, Any]:
+                return {
+                    "worms": [
+                        {"id": 0, "health": 100, "x": 1, "y": 1},
+                        {"id": 1, "health": 100, "x": 6, "y": 2},
+                    ],
+                    "map": [
+                        [1, 0, 0, 0, 0, 0, 0, 0],
+                        [1, 0, 0, 0, 0, 0, 0, 0],
+                        [1, 1, 1, 0, 0, 0, 1, 0],
+                        [1, 1, 1, 0, 0, 1, 1, 1],
+                    ],
+                }
+        
+            def expected_players(self) -> int:
+                return 2
+        
+            def step(self, player_id: int, action: Dict[str, Any]) -> Tuple[Dict[str, Any], float]:
+                reward = 0.0
+                # TODO: apply real rules here
+                return self.state, reward
+        
+            def game_over(self) -> bool:
+                return False
+        
+            def final_info(self) -> Dict[str, Any]:
+                return {"winner_id": 0, "final_state": self.state}
+        --- SLUTT INNHOLD (game_core.py) ---
+
+    |-- server.py
+        --- START INNHOLD (server.py) ---
+        #!/usr/bin/env python3
+        """
+        Turn‑based WebSocket server (handshake = CONNECT → ASSIGN_ID).
+        
+        Works with websockets ≥ 12.x (no .open / .closed attributes).
+        """
+        from __future__ import annotations
+        
+        import asyncio
+        import json
+        import sys
+        from enum import IntEnum
+        from pathlib import Path
+        from typing import Any
+        
+        import websockets
+        from websockets.exceptions import ConnectionClosed
+        
+        # --------------------------------------------------------------------------- #
+        # import pure game logic
+        # --------------------------------------------------------------------------- #
+        sys.path.append(str(Path(__file__).resolve().parent))
+        from game_core import GameCore  # noqa: E402
+        
+        HOST, PORT = "127.0.0.1", 8765
+        
+        
+        class WSState(IntEnum):
+            """Local alias of websockets.protocol.State values (to avoid importing
+            a private enum)."""
+        
+            CONNECTING = 0
+            OPEN = 1
+            CLOSING = 2
+            CLOSED = 3
+        
+        
+        class WormsServer:
+            """
+            Handles exactly one match:
+              • waits until GameCore.expected_players() sockets connect
+              • cycles turns until game_over()
+              • stops if every player disconnects
+            """
+        
+            def __init__(self) -> None:
+                self.core = GameCore()
+                self.clients: dict[Any, int] = {}          # websocket → player_id
+                self.turn_order: list[Any] = []            # rotation of sockets
+                self.game_started = False
+                self.idx = 0                               # current turn index
+        
+            # --------------------------------------------------------------------- #
+            # Connection‑lifetime handler
+            # --------------------------------------------------------------------- #
+            async def accept(self, ws: Any) -> None:
+                """Handshake + linger until socket closes (without reading)."""
+                try:
+                    raw = await asyncio.wait_for(ws.recv(), timeout=10)
+                    msg = json.loads(raw)
+                except (asyncio.TimeoutError, json.JSONDecodeError):
+                    await ws.close(code=4000, reason="Expected CONNECT")
+                    return
+        
+                if msg.get("type") != "CONNECT":
+                    await ws.close(code=4002, reason="First message must be CONNECT")
+                    return
+        
+                # 1. register player
+                pid = len(self.clients) + 1
+                self.clients[ws] = pid
+                self.turn_order.append(ws)
+                await ws.send(json.dumps({"type": "ASSIGN_ID", "player_id": pid}))
+                print(f"[server] Player {pid} connected ({msg.get('nick','?')})")
+        
+                # 2. start game once roster is full
+                if (
+                    not self.game_started
+                    and len(self.turn_order) == self.core.expected_players()
+                ):
+                    self.game_started = True
+                    asyncio.create_task(self.game_loop())
+        
+                # 3. keep connection alive without reading again
+                try:
+                    await ws.wait_closed()
+                finally:
+                    self.remove(ws)
+        
+            # --------------------------------------------------------------------- #
+            # Game loop (runs once per match)
+            # --------------------------------------------------------------------- #
+            async def game_loop(self) -> None:
+                print("[server] Game started")
+                while self.turn_order:
+                    # wrap index if list shrank
+                    if self.idx >= len(self.turn_order):
+                        self.idx = 0
+        
+                    # abort if everyone left
+                    if not self.turn_order:
+                        break
+        
+                    # check for finished game
+                    if self.core.game_over():
+                        await self.broadcast({"type": "GAME_OVER", **self.core.final_info()})
+                        print("[server] Game over broadcasted")
+                        return
+        
+                    ws = self.turn_order[self.idx]
+                    # drop socket if it has entered closing state
+                    if ws.state != WSState.OPEN:
+                        self.remove(ws, quiet=True)
+                        continue
+        
+                    pid = self.clients[ws]
+        
+                    # ------------------------------------------------ TURN_BEGIN --
+                    try:
+                        await ws.send(
+                            json.dumps(
+                                {
+                                    "type": "TURN_BEGIN",
+                                    "player_id": pid,
+                                    "state": self.core.state,
+                                    "time_limit_ms": 15000,
+                                }
+                            )
+                        )
+                    except ConnectionClosed:
+                        self.remove(ws)
+                        continue
+        
+                    # ------------------------------------------------ wait ACTION --
+                    try:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=15)
+                        msg = json.loads(raw)
+                        if msg.get("type") != "ACTION" or msg.get("player_id") != pid:
+                            raise ValueError
+                    except (asyncio.TimeoutError, ValueError):
+                        await self.safe_send(
+                            ws,
+                            {"type": "ERROR", "msg": "timeout or invalid action"},
+                        )
+                        self.idx += 1
+                        continue
+                    except ConnectionClosed:
+                        self.remove(ws)
+                        continue
+        
+                    # ------------------------------------------------ apply step --
+                    new_state, reward = self.core.step(pid, msg.get("action", {}))
+                    await self.broadcast(
+                        {
+                            "type": "TURN_RESULT",
+                            "player_id": pid,
+                            "state": new_state,
+                            "reward": reward,
+                        }
+                    )
+        
+                    # ------------------------------------------------ end turn ----
+                    self.idx += 1
+                    if self.turn_order:  # may have shrunk!
+                        next_ws = self.turn_order[self.idx % len(self.turn_order)]
+                        await self.broadcast(
+                            {
+                                "type": "TURN_END",
+                                "next_player_id": self.clients[next_ws],
+                            }
+                        )
+        
+                print("[server] Match ended (no players left)")
+        
+            # --------------------------------------------------------------------- #
+            # Helpers
+            # --------------------------------------------------------------------- #
+            async def broadcast(self, msg: dict) -> None:
+                """Send JSON to every player; drop those that closed."""
+                data = json.dumps(msg)
+                dead: list[Any] = []
+                for ws in list(self.turn_order):
+                    try:
+                        await ws.send(data)
+                    except ConnectionClosed:
+                        dead.append(ws)
+                for ws in dead:
+                    self.remove(ws, quiet=True)
+        
+            async def safe_send(self, ws: Any, msg: dict) -> None:
+                """Send but ignore ConnectionClosed."""
+                try:
+                    await ws.send(json.dumps(msg))
+                except ConnectionClosed:
+                    self.remove(ws, quiet=True)
+        
+            def remove(self, ws: Any, *, quiet: bool = False) -> None:
+                """Drop socket from lists; adjust index if needed."""
+                if ws in self.turn_order:
+                    idx = self.turn_order.index(ws)
+                    self.turn_order.remove(ws)
+                    # keep idx pointing to same logical player
+                    if idx <= self.idx and self.idx > 0:
+                        self.idx -= 1
+                if ws in self.clients:
+                    pid = self.clients.pop(ws)
+                    if not quiet:
+                        print(f"[server] Player {pid} disconnected")
+        
+        
+        # --------------------------------------------------------------------------- #
+        # entry‑point
+        # --------------------------------------------------------------------------- #
+        async def main() -> None:
+            async with websockets.serve(WormsServer().accept, HOST, PORT):
+                print(f"Listening on ws://{HOST}:{PORT}")
+                await asyncio.Future()  # run forever
+        
+        
+        if __name__ == "__main__":
+            asyncio.run(main())
+        --- SLUTT INNHOLD (server.py) ---
+
+frontend/
+    |-- package-lock.json
+        --- START INNHOLD (package-lock.json) ---
+        {
+          "name": "relearning",
+          "version": "0.0.1",
+          "lockfileVersion": 3,
+          "requires": true,
+          "packages": {
+            "": {
+              "name": "relearning",
+              "version": "0.0.1",
+              "dependencies": {
+                "esbuild": "^0.25.4",
+                "pixi.js": "^8.9.2"
+              }
+            },
+            "node_modules/@esbuild/aix-ppc64": {
+              "version": "0.25.4",
+              "resolved": "https://registry.npmjs.org/@esbuild/aix-ppc64/-/aix-ppc64-0.25.4.tgz",
+              "integrity": "sha512-1VCICWypeQKhVbE9oW/sJaAmjLxhVqacdkvPLEjwlttjfwENRSClS8EjBz0KzRyFSCPDIkuXW34Je/vk7zdB7Q==",
+              "cpu": [
+                "ppc64"
+              ],
+              "license": "MIT",
+              "optional": true,
+              "os": [
+                "aix"
+              ],
+              "engines": {
+                "node": ">=18"
+              }
+            },
+            "node_modules/@esbuild/android-arm": {
+              "version": "0.25.4",
+              "resolved": "https://registry.npmjs.org/@esbuild/android-arm/-/android-arm-0.25.4.tgz",
+              "integrity": "sha512-QNdQEps7DfFwE3hXiU4BZeOV68HHzYwGd0Nthhd3uCkkEKK7/R6MTgM0P7H7FAs5pU/DIWsviMmEGxEoxIZ+ZQ==",
+              "cpu": [
+                "arm"
+              ],
+              "license": "MIT",
+              "optional": true,
+              "os": [
+                "android"
+              ],
+              "engines": {
+                "node": ">=18"
+              }
+            },
+            "node_modules/@esbuild/android-arm64": {
+              "version": "0.25.4",
+              "resolved": "https://registry.npmjs.org/@esbuild/android-arm64/-/android-arm64-0.25.4.tgz",
+              "integrity": "sha512-bBy69pgfhMGtCnwpC/x5QhfxAz/cBgQ9enbtwjf6V9lnPI/hMyT9iWpR1arm0l3kttTr4L0KSLpKmLp/ilKS9A==",
+              "cpu": [
+                "arm64"
+              ],
+              "license": "MIT",
+              "optional": true,
+              "os": [
+                "android"
+              ],
+              "engines": {
+                "node": ">=18"
+              }
+            },
+            "node_modules/@esbuild/android-x64": {
+              "version": "0.25.4",
+              "resolved": "https://registry.npmjs.org/@esbuild/android-x64/-/android-x64-0.25.4.tgz",
+              "integrity": "sha512-TVhdVtQIFuVpIIR282btcGC2oGQoSfZfmBdTip2anCaVYcqWlZXGcdcKIUklfX2wj0JklNYgz39OBqh2cqXvcQ==",
+              "cpu": [
+                "x64"
+              ],
+              "license": "MIT",
+              "optional": true,
+              "os": [
+                "android"
+              ],
+              "engines": {
+                "node": ">=18"
+              }
+            },
+            "node_modules/@esbuild/darwin-arm64": {
+              "version": "0.25.4",
+              "resolved": "https://registry.npmjs.org/@esbuild/darwin-arm64/-/darwin-arm64-0.25.4.tgz",
+              "integrity": "sha512-Y1giCfM4nlHDWEfSckMzeWNdQS31BQGs9/rouw6Ub91tkK79aIMTH3q9xHvzH8d0wDru5Ci0kWB8b3up/nl16g==",
+              "cpu": [
+                "arm64"
+              ],
+              "license": "MIT",
+              "optional": true,
+              "os": [
+                "darwin"
+              ],
+              "engines": {
+                "node": ">=18"
+              }
+            },
+            "node_modules/@esbuild/darwin-x64": {
+              "version": "0.25.4",
+              "resolved": "https://registry.npmjs.org/@esbuild/darwin-x64/-/darwin-x64-0.25.4.tgz",
+              "integrity": "sha512-CJsry8ZGM5VFVeyUYB3cdKpd/H69PYez4eJh1W/t38vzutdjEjtP7hB6eLKBoOdxcAlCtEYHzQ/PJ/oU9I4u0A==",
+              "cpu": [
+                "x64"
+              ],
+              "license": "MIT",
+              "optional": true,
+              "os": [
+                "darwin"
+              ],
+              "engines": {
+                "node": ">=18"
+              }
+            },
+            "node_modules/@esbuild/freebsd-arm64": {
+              "version": "0.25.4",
+              "resolved": "https://registry.npmjs.org/@esbuild/freebsd-arm64/-/freebsd-arm64-0.25.4.tgz",
+              "integrity": "sha512-yYq+39NlTRzU2XmoPW4l5Ifpl9fqSk0nAJYM/V/WUGPEFfek1epLHJIkTQM6bBs1swApjO5nWgvr843g6TjxuQ==",
+              "cpu": [
+                "arm64"
+              ],
+              "license": "MIT",
+              "optional": true,
+              "os": [
+                "freebsd"
+              ],
+              "engines": {
+                "node": ">=18"
+              }
+            },
+            "node_modules/@esbuild/freebsd-x64": {
+              "version": "0.25.4",
+              "resolved": "https://registry.npmjs.org/@esbuild/freebsd-x64/-/freebsd-x64-0.25.4.tgz",
+              "integrity": "sha512-0FgvOJ6UUMflsHSPLzdfDnnBBVoCDtBTVyn/MrWloUNvq/5SFmh13l3dvgRPkDihRxb77Y17MbqbCAa2strMQQ==",
+              "cpu": [
+                "x64"
+              ],
+              "license": "MIT",
+              "optional": true,
+              "os": [
+                "freebsd"
+              ],
+              "engines": {
+                "node": ">=18"
+              }
+            },
+            "node_modules/@esbuild/linux-arm": {
+              "version": "0.25.4",
+              "resolved": "https://registry.npmjs.org/@esbuild/linux-arm/-/linux-arm-0.25.4.tgz",
+              "integrity": "sha512-kro4c0P85GMfFYqW4TWOpvmF8rFShbWGnrLqlzp4X1TNWjRY3JMYUfDCtOxPKOIY8B0WC8HN51hGP4I4hz4AaQ==",
+              "cpu": [
+                "arm"
+              ],
+              "license": "MIT",
+              "optional": true,
+              "os": [
+                "linux"
+              ],
+              "engines": {
+                "node": ">=18"
+              }
+            },
+            "node_modules/@esbuild/linux-arm64": {
+              "version": "0.25.4",
+              "resolved": "https://registry.npmjs.org/@esbuild/linux-arm64/-/linux-arm64-0.25.4.tgz",
+              "integrity": "sha512-+89UsQTfXdmjIvZS6nUnOOLoXnkUTB9hR5QAeLrQdzOSWZvNSAXAtcRDHWtqAUtAmv7ZM1WPOOeSxDzzzMogiQ==",
+              "cpu": [
+                "arm64"
+              ],
+              "license": "MIT",
+              "optional": true,
+              "os": [
+                "linux"
+              ],
+              "engines": {
+                "node": ">=18"
+              }
+            },
+            "node_modules/@esbuild/linux-ia32": {
+              "version": "0.25.4",
+              "resolved": "https://registry.npmjs.org/@esbuild/linux-ia32/-/linux-ia32-0.25.4.tgz",
+              "integrity": "sha512-yTEjoapy8UP3rv8dB0ip3AfMpRbyhSN3+hY8mo/i4QXFeDxmiYbEKp3ZRjBKcOP862Ua4b1PDfwlvbuwY7hIGQ==",
+              "cpu": [
+                "ia32"
+              ],
+              "license": "MIT",
+              "optional": true,
+              "os": [
+                "linux"
+              ],
+              "engines": {
+                "node": ">=18"
+              }
+            },
+            "node_modules/@esbuild/linux-loong64": {
+              "version": "0.25.4",
+              "resolved": "https://registry.npmjs.org/@esbuild/linux-loong64/-/linux-loong64-0.25.4.tgz",
+              "integrity": "sha512-NeqqYkrcGzFwi6CGRGNMOjWGGSYOpqwCjS9fvaUlX5s3zwOtn1qwg1s2iE2svBe4Q/YOG1q6875lcAoQK/F4VA==",
+              "cpu": [
+                "loong64"
+              ],
+              "license": "MIT",
+              "optional": true,
+              "os": [
+                "linux"
+              ],
+              "engines": {
+                "node": ">=18"
+              }
+            },
+            "node_modules/@esbuild/linux-mips64el": {
+              "version": "0.25.4",
+              "resolved": "https://registry.npmjs.org/@esbuild/linux-mips64el/-/linux-mips64el-0.25.4.tgz",
+              "integrity": "sha512-IcvTlF9dtLrfL/M8WgNI/qJYBENP3ekgsHbYUIzEzq5XJzzVEV/fXY9WFPfEEXmu3ck2qJP8LG/p3Q8f7Zc2Xg==",
+              "cpu": [
+                "mips64el"
+              ],
+              "license": "MIT",
+              "optional": true,
+              "os": [
+                "linux"
+              ],
+              "engines": {
+                "node": ">=18"
+              }
+            },
+            "node_modules/@esbuild/linux-ppc64": {
+              "version": "0.25.4",
+              "resolved": "https://registry.npmjs.org/@esbuild/linux-ppc64/-/linux-ppc64-0.25.4.tgz",
+              "integrity": "sha512-HOy0aLTJTVtoTeGZh4HSXaO6M95qu4k5lJcH4gxv56iaycfz1S8GO/5Jh6X4Y1YiI0h7cRyLi+HixMR+88swag==",
+              "cpu": [
+                "ppc64"
+              ],
+              "license": "MIT",
+              "optional": true,
+              "os": [
+                "linux"
+              ],
+              "engines": {
+                "node": ">=18"
+              }
+            },
+            "node_modules/@esbuild/linux-riscv64": {
+              "version": "0.25.4",
+              "resolved": "https://registry.npmjs.org/@esbuild/linux-riscv64/-/linux-riscv64-0.25.4.tgz",
+              "integrity": "sha512-i8JUDAufpz9jOzo4yIShCTcXzS07vEgWzyX3NH2G7LEFVgrLEhjwL3ajFE4fZI3I4ZgiM7JH3GQ7ReObROvSUA==",
+              "cpu": [
+                "riscv64"
+              ],
+              "license": "MIT",
+              "optional": true,
+              "os": [
+                "linux"
+              ],
+              "engines": {
+                "node": ">=18"
+              }
+            },
+            "node_modules/@esbuild/linux-s390x": {
+              "version": "0.25.4",
+              "resolved": "https://registry.npmjs.org/@esbuild/linux-s390x/-/linux-s390x-0.25.4.tgz",
+              "integrity": "sha512-jFnu+6UbLlzIjPQpWCNh5QtrcNfMLjgIavnwPQAfoGx4q17ocOU9MsQ2QVvFxwQoWpZT8DvTLooTvmOQXkO51g==",
+              "cpu": [
+                "s390x"
+              ],
+              "license": "MIT",
+              "optional": true,
+              "os": [
+                "linux"
+              ],
+              "engines": {
+                "node": ">=18"
+              }
+            },
+            "node_modules/@esbuild/linux-x64": {
+              "version": "0.25.4",
+              "resolved": "https://registry.npmjs.org/@esbuild/linux-x64/-/linux-x64-0.25.4.tgz",
+              "integrity": "sha512-6e0cvXwzOnVWJHq+mskP8DNSrKBr1bULBvnFLpc1KY+d+irZSgZ02TGse5FsafKS5jg2e4pbvK6TPXaF/A6+CA==",
+              "cpu": [
+                "x64"
+              ],
+              "license": "MIT",
+              "optional": true,
+              "os": [
+                "linux"
+              ],
+              "engines": {
+                "node": ">=18"
+              }
+            },
+            "node_modules/@esbuild/netbsd-arm64": {
+              "version": "0.25.4",
+              "resolved": "https://registry.npmjs.org/@esbuild/netbsd-arm64/-/netbsd-arm64-0.25.4.tgz",
+              "integrity": "sha512-vUnkBYxZW4hL/ie91hSqaSNjulOnYXE1VSLusnvHg2u3jewJBz3YzB9+oCw8DABeVqZGg94t9tyZFoHma8gWZQ==",
+              "cpu": [
+                "arm64"
+              ],
+              "license": "MIT",
+              "optional": true,
+              "os": [
+                "netbsd"
+              ],
+              "engines": {
+                "node": ">=18"
+              }
+            },
+            "node_modules/@esbuild/netbsd-x64": {
+              "version": "0.25.4",
+              "resolved": "https://registry.npmjs.org/@esbuild/netbsd-x64/-/netbsd-x64-0.25.4.tgz",
+              "integrity": "sha512-XAg8pIQn5CzhOB8odIcAm42QsOfa98SBeKUdo4xa8OvX8LbMZqEtgeWE9P/Wxt7MlG2QqvjGths+nq48TrUiKw==",
+              "cpu": [
+                "x64"
+              ],
+              "license": "MIT",
+              "optional": true,
+              "os": [
+                "netbsd"
+              ],
+              "engines": {
+                "node": ">=18"
+              }
+            },
+            "node_modules/@esbuild/openbsd-arm64": {
+              "version": "0.25.4",
+              "resolved": "https://registry.npmjs.org/@esbuild/openbsd-arm64/-/openbsd-arm64-0.25.4.tgz",
+              "integrity": "sha512-Ct2WcFEANlFDtp1nVAXSNBPDxyU+j7+tId//iHXU2f/lN5AmO4zLyhDcpR5Cz1r08mVxzt3Jpyt4PmXQ1O6+7A==",
+              "cpu": [
+                "arm64"
+              ],
+              "license": "MIT",
+              "optional": true,
+              "os": [
+                "openbsd"
+              ],
+              "engines": {
+                "node": ">=18"
+              }
+            },
+            "node_modules/@esbuild/openbsd-x64": {
+              "version": "0.25.4",
+              "resolved": "https://registry.npmjs.org/@esbuild/openbsd-x64/-/openbsd-x64-0.25.4.tgz",
+              "integrity": "sha512-xAGGhyOQ9Otm1Xu8NT1ifGLnA6M3sJxZ6ixylb+vIUVzvvd6GOALpwQrYrtlPouMqd/vSbgehz6HaVk4+7Afhw==",
+              "cpu": [
+                "x64"
+              ],
+              "license": "MIT",
+              "optional": true,
+              "os": [
+                "openbsd"
+              ],
+              "engines": {
+                "node": ">=18"
+              }
+            },
+            "node_modules/@esbuild/sunos-x64": {
+              "version": "0.25.4",
+              "resolved": "https://registry.npmjs.org/@esbuild/sunos-x64/-/sunos-x64-0.25.4.tgz",
+              "integrity": "sha512-Mw+tzy4pp6wZEK0+Lwr76pWLjrtjmJyUB23tHKqEDP74R3q95luY/bXqXZeYl4NYlvwOqoRKlInQialgCKy67Q==",
+              "cpu": [
+                "x64"
+              ],
+              "license": "MIT",
+              "optional": true,
+              "os": [
+                "sunos"
+              ],
+              "engines": {
+                "node": ">=18"
+              }
+            },
+            "node_modules/@esbuild/win32-arm64": {
+              "version": "0.25.4",
+              "resolved": "https://registry.npmjs.org/@esbuild/win32-arm64/-/win32-arm64-0.25.4.tgz",
+              "integrity": "sha512-AVUP428VQTSddguz9dO9ngb+E5aScyg7nOeJDrF1HPYu555gmza3bDGMPhmVXL8svDSoqPCsCPjb265yG/kLKQ==",
+              "cpu": [
+                "arm64"
+              ],
+              "license": "MIT",
+              "optional": true,
+              "os": [
+                "win32"
+              ],
+              "engines": {
+                "node": ">=18"
+              }
+            },
+            "node_modules/@esbuild/win32-ia32": {
+              "version": "0.25.4",
+              "resolved": "https://registry.npmjs.org/@esbuild/win32-ia32/-/win32-ia32-0.25.4.tgz",
+              "integrity": "sha512-i1sW+1i+oWvQzSgfRcxxG2k4I9n3O9NRqy8U+uugaT2Dy7kLO9Y7wI72haOahxceMX8hZAzgGou1FhndRldxRg==",
+              "cpu": [
+                "ia32"
+              ],
+              "license": "MIT",
+              "optional": true,
+              "os": [
+                "win32"
+              ],
+              "engines": {
+                "node": ">=18"
+              }
+            },
+            "node_modules/@esbuild/win32-x64": {
+              "version": "0.25.4",
+              "resolved": "https://registry.npmjs.org/@esbuild/win32-x64/-/win32-x64-0.25.4.tgz",
+              "integrity": "sha512-nOT2vZNw6hJ+z43oP1SPea/G/6AbN6X+bGNhNuq8NtRHy4wsMhw765IKLNmnjek7GvjWBYQ8Q5VBoYTFg9y1UQ==",
+              "cpu": [
+                "x64"
+              ],
+              "license": "MIT",
+              "optional": true,
+              "os": [
+                "win32"
+              ],
+              "engines": {
+                "node": ">=18"
+              }
+            },
+            "node_modules/@pixi/colord": {
+              "version": "2.9.6",
+              "resolved": "https://registry.npmjs.org/@pixi/colord/-/colord-2.9.6.tgz",
+              "integrity": "sha512-nezytU2pw587fQstUu1AsJZDVEynjskwOL+kibwcdxsMBFqPsFFNA7xl0ii/gXuDi6M0xj3mfRJj8pBSc2jCfA==",
+              "license": "MIT"
+            },
+            "node_modules/@types/css-font-loading-module": {
+              "version": "0.0.12",
+              "resolved": "https://registry.npmjs.org/@types/css-font-loading-module/-/css-font-loading-module-0.0.12.tgz",
+              "integrity": "sha512-x2tZZYkSxXqWvTDgveSynfjq/T2HyiZHXb00j/+gy19yp70PHCizM48XFdjBCWH7eHBD0R5i/pw9yMBP/BH5uA==",
+              "license": "MIT"
+            },
+            "node_modules/@types/earcut": {
+              "version": "2.1.4",
+              "resolved": "https://registry.npmjs.org/@types/earcut/-/earcut-2.1.4.tgz",
+              "integrity": "sha512-qp3m9PPz4gULB9MhjGID7wpo3gJ4bTGXm7ltNDsmOvsPduTeHp8wSW9YckBj3mljeOh4F0m2z/0JKAALRKbmLQ==",
+              "license": "MIT"
+            },
+            "node_modules/@webgpu/types": {
+              "version": "0.1.60",
+              "resolved": "https://registry.npmjs.org/@webgpu/types/-/types-0.1.60.tgz",
+              "integrity": "sha512-8B/tdfRFKdrnejqmvq95ogp8tf52oZ51p3f4QD5m5Paey/qlX4Rhhy5Y8tgFMi7Ms70HzcMMw3EQjH/jdhTwlA==",
+              "license": "BSD-3-Clause"
+            },
+            "node_modules/@xmldom/xmldom": {
+              "version": "0.8.10",
+              "resolved": "https://registry.npmjs.org/@xmldom/xmldom/-/xmldom-0.8.10.tgz",
+              "integrity": "sha512-2WALfTl4xo2SkGCYRt6rDTFfk9R1czmBvUQy12gK2KuRKIpWEhcbbzy8EZXtz/jkRqHX8bFEc6FC1HjX4TUWYw==",
+              "license": "MIT",
+              "engines": {
+                "node": ">=10.0.0"
+              }
+            },
+            "node_modules/earcut": {
+              "version": "2.2.4",
+              "resolved": "https://registry.npmjs.org/earcut/-/earcut-2.2.4.tgz",
+              "integrity": "sha512-/pjZsA1b4RPHbeWZQn66SWS8nZZWLQQ23oE3Eam7aroEFGEvwKAsJfZ9ytiEMycfzXWpca4FA9QIOehf7PocBQ==",
+              "license": "ISC"
+            },
+            "node_modules/esbuild": {
+              "version": "0.25.4",
+              "resolved": "https://registry.npmjs.org/esbuild/-/esbuild-0.25.4.tgz",
+              "integrity": "sha512-8pgjLUcUjcgDg+2Q4NYXnPbo/vncAY4UmyaCm0jZevERqCHZIaWwdJHkf8XQtu4AxSKCdvrUbT0XUr1IdZzI8Q==",
+              "hasInstallScript": true,
+              "license": "MIT",
+              "bin": {
+                "esbuild": "bin/esbuild"
+              },
+              "engines": {
+                "node": ">=18"
+              },
+              "optionalDependencies": {
+                "@esbuild/aix-ppc64": "0.25.4",
+                "@esbuild/android-arm": "0.25.4",
+                "@esbuild/android-arm64": "0.25.4",
+                "@esbuild/android-x64": "0.25.4",
+                "@esbuild/darwin-arm64": "0.25.4",
+                "@esbuild/darwin-x64": "0.25.4",
+                "@esbuild/freebsd-arm64": "0.25.4",
+                "@esbuild/freebsd-x64": "0.25.4",
+                "@esbuild/linux-arm": "0.25.4",
+                "@esbuild/linux-arm64": "0.25.4",
+                "@esbuild/linux-ia32": "0.25.4",
+                "@esbuild/linux-loong64": "0.25.4",
+                "@esbuild/linux-mips64el": "0.25.4",
+                "@esbuild/linux-ppc64": "0.25.4",
+                "@esbuild/linux-riscv64": "0.25.4",
+                "@esbuild/linux-s390x": "0.25.4",
+                "@esbuild/linux-x64": "0.25.4",
+                "@esbuild/netbsd-arm64": "0.25.4",
+                "@esbuild/netbsd-x64": "0.25.4",
+                "@esbuild/openbsd-arm64": "0.25.4",
+                "@esbuild/openbsd-x64": "0.25.4",
+                "@esbuild/sunos-x64": "0.25.4",
+                "@esbuild/win32-arm64": "0.25.4",
+                "@esbuild/win32-ia32": "0.25.4",
+                "@esbuild/win32-x64": "0.25.4"
+              }
+            },
+            "node_modules/eventemitter3": {
+              "version": "5.0.1",
+              "resolved": "https://registry.npmjs.org/eventemitter3/-/eventemitter3-5.0.1.tgz",
+              "integrity": "sha512-GWkBvjiSZK87ELrYOSESUYeVIc9mvLLf/nXalMOS5dYrgZq9o5OVkbZAVM06CVxYsCwH9BDZFPlQTlPA1j4ahA==",
+              "license": "MIT"
+            },
+            "node_modules/gifuct-js": {
+              "version": "2.1.2",
+              "resolved": "https://registry.npmjs.org/gifuct-js/-/gifuct-js-2.1.2.tgz",
+              "integrity": "sha512-rI2asw77u0mGgwhV3qA+OEgYqaDn5UNqgs+Bx0FGwSpuqfYn+Ir6RQY5ENNQ8SbIiG/m5gVa7CD5RriO4f4Lsg==",
+              "license": "MIT",
+              "dependencies": {
+                "js-binary-schema-parser": "^2.0.3"
+              }
+            },
+            "node_modules/ismobilejs": {
+              "version": "1.1.1",
+              "resolved": "https://registry.npmjs.org/ismobilejs/-/ismobilejs-1.1.1.tgz",
+              "integrity": "sha512-VaFW53yt8QO61k2WJui0dHf4SlL8lxBofUuUmwBo0ljPk0Drz2TiuDW4jo3wDcv41qy/SxrJ+VAzJ/qYqsmzRw==",
+              "license": "MIT"
+            },
+            "node_modules/js-binary-schema-parser": {
+              "version": "2.0.3",
+              "resolved": "https://registry.npmjs.org/js-binary-schema-parser/-/js-binary-schema-parser-2.0.3.tgz",
+              "integrity": "sha512-xezGJmOb4lk/M1ZZLTR/jaBHQ4gG/lqQnJqdIv4721DMggsa1bDVlHXNeHYogaIEHD9vCRv0fcL4hMA+Coarkg==",
+              "license": "MIT"
+            },
+            "node_modules/parse-svg-path": {
+              "version": "0.1.2",
+              "resolved": "https://registry.npmjs.org/parse-svg-path/-/parse-svg-path-0.1.2.tgz",
+              "integrity": "sha512-JyPSBnkTJ0AI8GGJLfMXvKq42cj5c006fnLz6fXy6zfoVjJizi8BNTpu8on8ziI1cKy9d9DGNuY17Ce7wuejpQ==",
+              "license": "MIT"
+            },
+            "node_modules/pixi.js": {
+              "version": "8.9.2",
+              "resolved": "https://registry.npmjs.org/pixi.js/-/pixi.js-8.9.2.tgz",
+              "integrity": "sha512-oLFBkOOA/O6OpT5T8o05AxgZB9x9yWNzEQ+WTNZZFoCvfU2GdT4sFTjpVFuHQzgZPmAm/1IFhKdNiXVnlL8PRw==",
+              "license": "MIT",
+              "dependencies": {
+                "@pixi/colord": "^2.9.6",
+                "@types/css-font-loading-module": "^0.0.12",
+                "@types/earcut": "^2.1.4",
+                "@webgpu/types": "^0.1.40",
+                "@xmldom/xmldom": "^0.8.10",
+                "earcut": "^2.2.4",
+                "eventemitter3": "^5.0.1",
+                "gifuct-js": "^2.1.2",
+                "ismobilejs": "^1.1.1",
+                "parse-svg-path": "^0.1.2"
+              }
+            }
+          }
+        }
+        --- SLUTT INNHOLD (package-lock.json) ---
+
+    |-- package.json
+        --- START INNHOLD (package.json) ---
+        {
+          "name": "relearning",
+          "version": "0.0.1",
+          "author": "Ask Sødal <asksodal@gmail.com>",
+          "scripts": {
+            "watch": "esbuild --bundle src/script.js --outfile=public/bundle.js --watch",
+            "serve": "esbuild --bundle src/script.js --outfile=public/bundle.js --servedir=public"
+          },
+          "dependencies": {
+            "pixi.js": "^8.9.2",
+            "esbuild": "^0.25.4"
+          }
+        }
+        --- SLUTT INNHOLD (package.json) ---
+
+    public/
+    src/
