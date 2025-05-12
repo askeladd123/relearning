@@ -3,114 +3,138 @@ import torch
 import numpy as np
 from . import config
 
-def preprocess_state(environment_json):
+
+def preprocess_state(current_game_state_json, agent_player_id):
     """
-    Konverterer rå environment JSON til tensorer klar for nettverket.
+    Konverterer game_state JSON (fra msg['state']) til tensorer klar for nettverket.
     Returnerer en tuple: (map_tensor, worm_vector_tensor)
     """
     try:
-        env_data = environment_json['new-environment']
-        map_data = env_data['map']
-        worms_data = env_data['worms']
+        # `current_game_state_json` er nå det som var `new-environment` før,
+        # dvs. direkte innholdet i `msg['state']`.
+        map_data = current_game_state_json['map']
+        worms_data = current_game_state_json['worms']
 
         # --- Kart Preprocessing ---
-        # Anta map_data er en liste av lister
         map_array = np.array(map_data, dtype=np.float32)
+        actual_map_h, actual_map_w = map_array.shape
 
-        # Resize/Pad kartet til fast størrelse (config.MAP_HEIGHT, config.MAP_WIDTH)
-        # Dette er en enkel padding-metode, mer avansert resizing kan være nødvendig
-        current_h, current_w = map_array.shape
-        padded_map = np.zeros((config.MAP_HEIGHT, config.MAP_WIDTH), dtype=np.float32)
-        # Senterer det mindre kartet i det større null-fylte kartet
-        pad_h_start = (config.MAP_HEIGHT - current_h) // 2
-        pad_w_start = (config.MAP_WIDTH - current_w) // 2
-        pad_h_end = pad_h_start + current_h
-        pad_w_end = pad_w_start + current_w
+        # Padding/Cropping for å matche config.MAP_HEIGHT, config.MAP_WIDTH
+        processed_map_array = np.zeros((config.MAP_HEIGHT, config.MAP_WIDTH), dtype=np.float32)
 
-        # Sikrer at indekser er innenfor grensene
-        if pad_h_start >= 0 and pad_h_end <= config.MAP_HEIGHT and \
-           pad_w_start >= 0 and pad_w_end <= config.MAP_WIDTH:
-             padded_map[pad_h_start:pad_h_end, pad_w_start:pad_w_end] = map_array[:config.MAP_HEIGHT-pad_h_start, :config.MAP_WIDTH-pad_w_start]
-        else:
-             # Fallback hvis originalt kart er større enn definert config-størrelse
-             padded_map = map_array[:config.MAP_HEIGHT, :config.MAP_WIDTH]
+        copy_h_len = min(actual_map_h, config.MAP_HEIGHT)
+        copy_w_len = min(actual_map_w, config.MAP_WIDTH)
 
+        # Senter-justert padding/cropping
+        src_start_h = (actual_map_h - copy_h_len) // 2
+        src_start_w = (actual_map_w - copy_w_len) // 2
+        dst_start_h = (config.MAP_HEIGHT - copy_h_len) // 2
+        dst_start_w = (config.MAP_WIDTH - copy_w_len) // 2
 
-        # Legg til en kanal-dimensjon for CNN (C, H, W)
-        map_tensor = torch.from_numpy(padded_map).unsqueeze(0).unsqueeze(0).to(config.DEVICE) # Shape: [1, 1, H, W]
+        processed_map_array[dst_start_h: dst_start_h + copy_h_len,
+        dst_start_w: dst_start_w + copy_w_len] = \
+            map_array[src_start_h: src_start_h + copy_h_len,
+            src_start_w: src_start_w + copy_w_len]
+
+        map_tensor = torch.from_numpy(processed_map_array).unsqueeze(0).unsqueeze(0).to(config.DEVICE)
 
         # --- Worm Data Preprocessing ---
-        # VIKTIG: Anta at AI styrer worm med id 0 for nå. Må avklares med Ask!
-        # Hvordan vet AI hvilken orm som er aktiv? Får den en ID?
-        # For nå, antar vi at ormen AI styrer er den første i listen med health > 0
-        active_worm = None
-        other_worms_features = []
+        active_worm_features = [0.0] * config.ACTIVE_WORM_FEATURE_DIM  # Default til null-vektor
 
-        # Finn den aktive ormen (første levende)
-        for worm in worms_data:
-            if worm['health'] > 0 and active_worm is None:
-                 active_worm = worm
-                 break # Styrer kun en om gangen per design nå
+        # agent_player_id er 1-basert. Orm ID i JSON er 0-basert.
+        my_worm_json_id = agent_player_id - 1
 
-        if active_worm is None and worms_data: # Hvis ingen er levende, ta data fra den første (døde)
-            active_worm = worms_data[0]
-        elif active_worm is None: # Hvis ingen ormer finnes
-             # Returner null-vektor hvis ingen ormer finnes
-             worm_vector_tensor = torch.zeros(1, config.WORM_VECTOR_DIM).to(config.DEVICE)
-             return map_tensor, worm_vector_tensor
+        found_my_worm = False
+        for worm_info in worms_data:
+            if worm_info['id'] == my_worm_json_id:
+                # Normaliser aktiv orm data
+                # Bruk faktiske kartdimensjoner for normalisering av posisjon
+                norm_health = worm_info['health'] / config.MAX_WORM_HEALTH
+                # Klipp x og y for å unngå verdier utenfor [0,1] ved kanten av kartet
+                norm_x = np.clip(worm_info['x'] / float(actual_map_w - 1 if actual_map_w > 1 else 1), 0.0, 1.0)
+                norm_y = np.clip(worm_info['y'] / float(actual_map_h - 1 if actual_map_h > 1 else 1), 0.0, 1.0)
 
-        # Normaliser aktiv orm data
-        norm_health = active_worm['health'] / config.MAX_WORM_HEALTH
-        norm_x = active_worm['x'] / config.MAX_X_POS
-        norm_y = active_worm['y'] / config.MAX_Y_POS
+                active_worm_features = [
+                    np.clip(norm_health, 0.0, 1.0),
+                    norm_x,
+                    norm_y
+                ]
+                found_my_worm = True
+                break
 
-        worm_features = [norm_health, norm_x, norm_y]
+        if not found_my_worm:
+            # Dette kan skje hvis ormen er død og fjernet fra listen,
+            # eller hvis det er en feil i player_id matching.
+            # Agenten bør fortsatt få en input.
+            # print(f"Advarsel: Fant ikke orm data for agent player_id {agent_player_id} (intern id {my_worm_json_id})")
+            pass  # Bruker default null-vektor
 
-        # TODO (Avansert): Inkluder info om *andre* ormer også?
-        # for worm in worms_data:
-        #    if worm['id'] != active_worm['id']:
-        #       # Legg til normaliserte data for andre ormer
-        #       pass
-
-        worm_vector_tensor = torch.FloatTensor([worm_features]).to(config.DEVICE) # Shape: [1, WORM_VECTOR_DIM]
+        worm_vector_tensor = torch.FloatTensor([active_worm_features]).to(config.DEVICE)
 
         return map_tensor, worm_vector_tensor
 
     except KeyError as e:
-        print(f"Error preprocessing state: Missing key {e} in JSON: {environment_json}")
-        # Returner dummy tensors ved feil
+        print(
+            f"FEIL i preprocess_state: Manglende nøkkel '{e}' i game_state_json: {str(current_game_state_json)[:200]}...")
         dummy_map = torch.zeros(1, config.CNN_INPUT_CHANNELS, config.MAP_HEIGHT, config.MAP_WIDTH).to(config.DEVICE)
         dummy_worm = torch.zeros(1, config.WORM_VECTOR_DIM).to(config.DEVICE)
         return dummy_map, dummy_worm
     except Exception as e:
-        print(f"An unexpected error occurred during preprocessing: {e}")
-        # Returner dummy tensors ved feil
+        print(
+            f"Uventet FEIL i preprocess_state: {type(e).__name__} - {e} med data {str(current_game_state_json)[:200]}...")
         dummy_map = torch.zeros(1, config.CNN_INPUT_CHANNELS, config.MAP_HEIGHT, config.MAP_WIDTH).to(config.DEVICE)
         dummy_worm = torch.zeros(1, config.WORM_VECTOR_DIM).to(config.DEVICE)
         return dummy_map, dummy_worm
 
 
-def format_action(action_type_idx, params):
-    """ Formaterer valgt handling og parametere til JSON for serveren. """
-    action_name = config.ACTION_LIST[action_type_idx]
-    action_json = {"action": action_name}
+def format_action(network_action_idx, params_from_network):
+    """
+    Formaterer valgt handling (fra nettverkets interne representasjon) og parametere
+    til JSON-formatet som serveren forventer (basert på json-docs.md).
 
-    if action_name == 'walk':
-        # Konverter bin index tilbake til en verdi, f.eks. (-5 til +5)
-        amount = params['walk_amount'] - (config.WALK_AMOUNT_BINS // 2)
-        action_json['amount-x'] = float(amount) # Sørg for float
-    elif action_name == 'kick':
-        action_json['weapon'] = 'kick'
-        action_json['force'] = float(params['kick_force']) # Sørg for float
-    elif action_name == 'bazooka':
-        action_json['weapon'] = 'bazooka'
-        action_json['angle'] = float(params['bazooka_angle']) # Sørg for float
-        action_json['force'] = float(params['bazooka_force']) # Sørg for float
-    elif action_name == 'grenade':
-        action_json['weapon'] = 'grenade'
-        action_json['angle'] = float(params['grenade_angle']) # Sørg for float
-        action_json['force'] = float(params['grenade_force']) # Sørg for float
-    # 'stand' trenger ingen ekstra parametere
+    Args:
+        network_action_idx (int): Indeksen til handlingen i config.NETWORK_ACTION_ORDER.
+        params_from_network (dict): En dictionary med samplede parametere fra nettverket.
+                                    Nøklene bør matche det agent.py legger inn,
+                                    f.eks. 'walk_dx_bin_idx', 'kick_force_val', etc.
+    """
+    network_action_name = config.NETWORK_ACTION_ORDER[network_action_idx]
 
-    # Viktig: Sjekk at datatyper (float vs int) stemmer med hva Ask forventer!
+    # Start med basis action type fra mapping
+    if network_action_name not in config.SERVER_ACTION_MAPPING:
+        print(f"FEIL: Ukjent nettverkshandling '{network_action_name}' i format_action. Sender 'stand'.")
+        return {"action": "stand"}
+
+    action_json = config.SERVER_ACTION_MAPPING[network_action_name].copy()  # Viktig med .copy()
+
+    # Legg til/modifiser parametere basert på nettverkets output
+    if network_action_name == 'walk':
+        # Konverter bin-indeks for dx tilbake til en faktisk dx-verdi
+        # Eks: 11 bins (-5 til +5). Bin 0 -> -5, Bin 5 -> 0, Bin 10 -> +5
+        # Formel: verdi = min_verdi + bin_idx * ( (max_verdi - min_verdi) / (antall_bins - 1) )
+        # Eller enklere: (bin_idx - (antall_bins // 2)) * step_size, hvis step_size er 1.
+        dx_bin_idx = params_from_network.get('walk_dx_bin_idx', config.WALK_DX_BINS // 2)  # Default til midten (0)
+        dx_value = config.WALK_DX_MIN + dx_bin_idx * \
+                   ((config.WALK_DX_MAX - config.WALK_DX_MIN) / (config.WALK_DX_BINS - 1))
+        action_json['dx'] = float(dx_value)
+
+    elif network_action_name == 'attack_kick':
+        # Force er 0-100
+        force_val = params_from_network.get('kick_force_val', 50.0)  # Default til 50
+        action_json['force'] = float(np.clip(force_val, 0.0, 100.0))
+
+    elif network_action_name == 'attack_bazooka':
+        angle_val = params_from_network.get('bazooka_angle_val', 0.0)  # Default til 0
+        action_json['angle_deg'] = float(angle_val)
+        # Merk: Bazooka har ikke 'force' i json-docs.md ACTION, kun i client.py eksempelet.
+        # Hvis serveren forventer det, må det legges til i json-docs og her.
+
+    elif network_action_name == 'attack_grenade':
+        angle_val = params_from_network.get('grenade_angle_val', 0.0)
+        action_json['angle_deg'] = float(angle_val)
+        force_val = params_from_network.get('grenade_force_val', 50.0)
+        action_json['force'] = float(np.clip(force_val, 0.0, 100.0))
+
+    # 'stand' trenger ingen ekstra parametere utover det som er i SERVER_ACTION_MAPPING
+
     return action_json

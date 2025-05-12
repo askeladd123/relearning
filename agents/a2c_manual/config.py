@@ -1,58 +1,80 @@
 # agents/a2c_manual/config.py
 import torch
 
-# ---- Viktig: Disse må kanskje justeres etter diskusjon med Ask ----
-# Kartdimensjoner (Eksempel - BRUK VERDIER FRA ASK!)
-MAP_WIDTH = 250  # Eksempel basert på Ask sin kommentar
-MAP_HEIGHT = 250 # Eksempel basert på Ask sin kommentar
-# Antall Worms per lag (eller totalt hvis free-for-all) - Trenger avklaring
-NUM_WORMS = 3 # Eksempel basert på environment.json
+# ---- Kartdimensjoner og Normalisering ----
+# Disse bør ideelt sett være dynamiske eller store nok for padding.
+# game_core.py har et lite 8x4 kart. Vi setter en MAKS forventet størrelse
+# for CNN input, men utils.py må håndtere mindre kart.
+MAP_WIDTH = 250
+MAP_HEIGHT = 250
 
-# Maks verdier for normalisering (Eksempel - trenger justering)
 MAX_WORM_HEALTH = 100.0
-MAX_X_POS = MAP_WIDTH -1
-MAX_Y_POS = MAP_HEIGHT -1
-# ------------------------------------------------------------------
+# MAX_X_POS og MAX_Y_POS brukes for normalisering i utils.py og bør
+# reflektere faktiske kartdimensjoner mottatt fra serveren, ikke padding-størrelsen.
 
-# Modell Dimensjoner
-# Input til CNN (1 kanal for kartet)
+# ---- Modell Dimensjoner ----
 CNN_INPUT_CHANNELS = 1
-# Output fra CNN (etter flattening, juster basert på CNN-arkitektur)
-CNN_FEATURE_DIM = 256 # Eksempel, avhenger av Conv/Pool lag
-# Dimensjon på worm-vektor (id?, health, x, y for *alle* worms)
-# (id [one-hot?], health, x, y) * NUM_WORMS? Eller bare health,x,y? La oss starte enkelt:
-# health, x, y for *egen* orm + health, x, y for *alle andre* ormer?
-# Enkleste start: Kun egen health, x, y (normalisert)
-# Må avklares med Ask hvordan AI vet *hvilken* orm den styrer
-WORM_VECTOR_DIM = 3 # Kun health, x, y for aktiv orm
-# Total input til FC-lag etter CNN og konkatinering
+# Gitt AdaptiveMaxPool2d((6, 6)) og 32 output kanaler fra conv2, blir dette 32*6*6 = 1152
+CNN_FEATURE_DIM = 1152 # Dette er output etter CNN og pooling, før flattening
+
+# WORM_VECTOR_DIM: Hvilke features skal vi ha for ormene?
+# For aktiv orm: normalisert health, x, y
+# For andre ormer (potensielt): health, relativ x, relativ y, er fiende?
+# Enkel start: Kun egen orms health, x, y (normalisert)
+ACTIVE_WORM_FEATURE_DIM = 3 # health, x, y
+# La oss for nå kun fokusere på den aktive ormen.
+# Hvis vi vil inkludere andre ormer, må WORM_VECTOR_DIM økes.
+WORM_VECTOR_DIM = ACTIVE_WORM_FEATURE_DIM
 COMBINED_FEATURE_DIM = CNN_FEATURE_DIM + WORM_VECTOR_DIM
 
-# Action Space Definisjoner
-ACTION_LIST = ['stand', 'walk', 'kick', 'bazooka', 'grenade']
-ACTION_DIM = len(ACTION_LIST) # Antall diskrete handlinger
+# ---- Action Space Definisjoner (basert på json-docs.md og internt for nettverket) ----
+# Dette er rekkefølgen handlingene presenteres for nettverkets output-hode (policy).
+# Må matche output-laget i model.py og logikken i agent.py.
+# 'attack_...' er interne navn for nettverket for å skille våpentyper.
+NETWORK_ACTION_ORDER = ['stand', 'walk', 'attack_kick', 'attack_bazooka', 'attack_grenade']
+ACTION_DIM = len(NETWORK_ACTION_ORDER) # Antall diskrete hovedhandlinger for nettverket
 
-# Parameter Space (Eksempler - Må defineres nøyere!)
-WALK_AMOUNT_BINS = 11 # F.eks., diskrete steg fra -5 til +5
-KICK_FORCE_PARAMS = 2  # F.eks., mean og std dev for Gaussian
-BAZOOKA_ANGLE_PARAMS = 2 # F.eks., mean og std dev
-BAZOOKA_FORCE_PARAMS = 2 # F.eks., mean og std dev
-GRENADE_ANGLE_PARAMS = 2 # F.eks., mean og std dev
-GRENADE_FORCE_PARAMS = 2 # F.eks., mean og std dev
+# Mapping fra nettverkets action navn til serverens action format
+# Brukes i utils.format_action
+SERVER_ACTION_MAPPING = {
+    'stand': {'action': 'stand'},
+    'walk': {'action': 'walk'}, # 'dx' parameter legges til dynamisk
+    'attack_kick': {'action': 'attack', 'weapon': 'kick'}, # 'force' parameter legges til
+    'attack_bazooka': {'action': 'attack', 'weapon': 'bazooka'}, # 'angle_deg' parameter
+    'attack_grenade': {'action': 'attack', 'weapon': 'grenade'} # 'angle_deg', 'force' params
+}
 
-# Hyperparametre for A2C
-LEARNING_RATE = 0.001
-GAMMA = 0.99  # Discount factor for fremtidige belønninger
-ENTROPY_COEF = 0.01 # Koeffisient for entropi-bonus (oppmuntrer utforskning)
-VALUE_LOSS_COEF = 0.5 # Koeffisient for critic loss
+# ---- Parameter Space for Nettverket ----
+# 'walk' -> 'dx' (diskretiserte bins for nettverket)
+WALK_DX_BINS = 11 # Gir verdier fra -5 til +5 hvis sentrert rundt 0
+WALK_DX_MIN = -5.0 # Minste faktiske dx verdi
+WALK_DX_MAX = 5.0  # Største faktiske dx verdi
 
-# Trening
-NUM_EPISODES = 10000 # Antall spill-episoder å trene
+# Kontinuerlige parametere (nettverket outputer mean og std for Normalfordeling)
+# Force (0-100)
+KICK_FORCE_PARAMS = 1 # Nettverket outputer 1 verdi for mean, 1 for std (totalt 2 nodes)
+BAZOOKA_ANGLE_PARAMS = 1
+GRENADE_ANGLE_PARAMS = 1
+GRENADE_FORCE_PARAMS = 1
 
-# Websocket
-SERVER_HOST = '127.0.0.1' # Ask sin server IP
-SERVER_PORT = 8765      # Ask sin server port
+# ---- A2C Hyperparametre ----
+LEARNING_RATE = 0.0007
+GAMMA = 0.99  # Discount factor
+ENTROPY_COEF = 0.01
+VALUE_LOSS_COEF = 0.5
+MAX_GRAD_NORM = 0.5 # For gradient clipping (valgfritt, men ofte lurt)
 
-# Annet
+# ---- Trening ----
+NUM_EPISODES = 10000
+# STEPS_PER_UPDATE = 20 # For N-step A2C, hvis ikke episode-basert
+
+# ---- Websocket ----
+SERVER_HOST = '127.0.0.1'
+SERVER_PORT = 8765
+
+# ---- Agent ----
+PLAYER_ID = None # Vil bli satt av serveren ved 'ASSIGN_ID'
+
+# ---- Annet ----
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Using device: {DEVICE}")

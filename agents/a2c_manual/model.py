@@ -2,121 +2,107 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.distributions import Categorical, Normal
-from . import config
+from . import config  # Bruk relativ import
+
 
 class ActorCriticNetwork(nn.Module):
     def __init__(self):
         super(ActorCriticNetwork, self).__init__()
 
         # --- CNN for Map Processing ---
-        # Eksempel arkitektur - kan justeres kraftig
-        self.conv1 = nn.Conv2d(config.CNN_INPUT_CHANNELS, 16, kernel_size=8, stride=4) # Output: [B, 16, H', W']
-        self.conv2 = nn.Conv2d(16, 32, kernel_size=4, stride=2)                      # Output: [B, 32, H'', W'']
-        # Beregn størrelsen etter conv-lagene for flattening
-        # Dette må gjøres manuelt eller dynamisk basert på input-størrelse
-        # Anta 250x250 input for eksempelberegning:
-        # Etter conv1 (stride 4): H' = floor((250-8)/4 + 1) = 61, W' = 61 => (16, 61, 61)
-        # Etter conv2 (stride 2): H'' = floor((61-4)/2 + 1) = 29, W'' = 29 => (32, 29, 29)
-        # Man må kanskje legge til pooling lag også.
-        # La oss anta output etter convs (og evt pooling/flatten) er config.CNN_FEATURE_DIM
-        # For et konkret eksempel, anta at output er (32 * 29 * 29) hvis ingen pooling.
-        # self.cnn_output_size = 32 * 29 * 29 # Eksempel
-        # La oss bruke en AdaptiveMaxPool2d for å få fast størrelse uansett input
-        self.pool = nn.AdaptiveMaxPool2d((6, 6)) # Output: [B, 32, 6, 6]
-        self.cnn_output_size = 32 * 6 * 6         # = 1152. La config.CNN_FEATURE_DIM være dette.
-        # Juster config.CNN_FEATURE_DIM til 1152 eller juster arkitekturen
+        self.conv1 = nn.Conv2d(config.CNN_INPUT_CHANNELS, 16, kernel_size=8, stride=4)
+        self.conv2 = nn.Conv2d(16, 32, kernel_size=4, stride=2)
+        self.pool = nn.AdaptiveMaxPool2d((6, 6))  # Sikrer fast output-størrelse: [B, 32, 6, 6]
+        # config.CNN_FEATURE_DIM er satt til 1152 (32*6*6)
 
         # --- Felles Fullt Tilkoblede Lag ---
-        self.fc_shared1 = nn.Linear(self.cnn_output_size + config.WORM_VECTOR_DIM, 256) # Kombinerer CNN og worm data
+        self.fc_shared1 = nn.Linear(config.CNN_FEATURE_DIM + config.WORM_VECTOR_DIM, 256)
         self.fc_shared2 = nn.Linear(256, 128)
 
         # --- Actor Hoder ---
-        # 1. Hode for diskret action type (stand, walk, kick, etc.)
-        self.action_head = nn.Linear(128, config.ACTION_DIM)
+        # 1. Hode for diskret action type (basert på config.NETWORK_ACTION_ORDER)
+        self.action_type_head = nn.Linear(128, config.ACTION_DIM)  # ACTION_DIM = len(NETWORK_ACTION_ORDER)
 
-        # 2. Hoder for parametere (kun relevant for visse actions)
-        #    Vi lager separate hoder for hver parameter type
+        # 2. Parameterhoder
+        # Walk 'dx' (logits for diskrete bins)
+        self.walk_dx_head = nn.Linear(128, config.WALK_DX_BINS)
 
-        # Walk amount (antar diskrete bins)
-        self.walk_amount_head = nn.Linear(128, config.WALK_AMOUNT_BINS)
+        # Kick 'force' (mean og log_std for Normalfordeling)
+        self.kick_force_mean_head = nn.Linear(128, config.KICK_FORCE_PARAMS)
+        self.kick_force_log_std_head = nn.Linear(128, config.KICK_FORCE_PARAMS)
 
-        # Kick force (antar kontinuerlig - output mean og std dev)
-        self.kick_force_mean_head = nn.Linear(128, 1)
-        self.kick_force_log_std_head = nn.Linear(128, 1) # Log std for stabilitet
+        # Bazooka 'angle_deg' (mean og log_std)
+        self.bazooka_angle_mean_head = nn.Linear(128, config.BAZOOKA_ANGLE_PARAMS)
+        self.bazooka_angle_log_std_head = nn.Linear(128, config.BAZOOKA_ANGLE_PARAMS)
+        # Ingen force for bazooka ifølge json-docs.md
 
-        # Bazooka angle (kontinuerlig)
-        self.bazooka_angle_mean_head = nn.Linear(128, 1)
-        self.bazooka_angle_log_std_head = nn.Linear(128, 1)
-        # Bazooka force (kontinuerlig)
-        self.bazooka_force_mean_head = nn.Linear(128, 1)
-        self.bazooka_force_log_std_head = nn.Linear(128, 1)
-
-        # Grenade angle (kontinuerlig)
-        self.grenade_angle_mean_head = nn.Linear(128, 1)
-        self.grenade_angle_log_std_head = nn.Linear(128, 1)
-        # Grenade force (kontinuerlig)
-        self.grenade_force_mean_head = nn.Linear(128, 1)
-        self.grenade_force_log_std_head = nn.Linear(128, 1)
-
+        # Grenade 'angle_deg' (mean og log_std)
+        self.grenade_angle_mean_head = nn.Linear(128, config.GRENADE_ANGLE_PARAMS)
+        self.grenade_angle_log_std_head = nn.Linear(128, config.GRENADE_ANGLE_PARAMS)
+        # Grenade 'force' (mean og log_std)
+        self.grenade_force_mean_head = nn.Linear(128, config.GRENADE_FORCE_PARAMS)
+        self.grenade_force_log_std_head = nn.Linear(128, config.GRENADE_FORCE_PARAMS)
 
         # --- Critic Hode ---
-        self.value_head = nn.Linear(128, 1) # Outputter state value V(s)
+        self.value_head = nn.Linear(128, 1)  # Outputter state value V(s)
 
     def forward(self, map_tensor, worm_vector_tensor):
         # CNN
-        # print("Map tensor shape:", map_tensor.shape) # Debugging shape
         x_map = F.relu(self.conv1(map_tensor))
         x_map = F.relu(self.conv2(x_map))
         x_map = self.pool(x_map)
-        x_map = x_map.view(x_map.size(0), -1) # Flatten
+        x_map = x_map.view(x_map.size(0), -1)  # Flatten til [BatchSize, CNN_FEATURE_DIM]
 
         # Kombiner med worm data
-        # print("CNN output shape:", x_map.shape) # Debugging shape
-        # print("Worm vector shape:", worm_vector_tensor.shape) # Debugging shape
-        x_combined = torch.cat((x_map, worm_vector_tensor), dim=1)
+        if worm_vector_tensor.dim() == 1:  # Hvis batch size = 1 og worm_vector ikke har batch dim
+            worm_vector_tensor = worm_vector_tensor.unsqueeze(0)
+
+        try:
+            x_combined = torch.cat((x_map, worm_vector_tensor), dim=1)
+        except RuntimeError as e:
+            print(f"FEIL ved torch.cat: map_shape={x_map.shape}, worm_shape={worm_vector_tensor.shape}")
+            print(f"Forventet worm_vector_dim: {config.WORM_VECTOR_DIM}, CNN_feature_dim: {config.CNN_FEATURE_DIM}")
+            raise e
 
         # Felles lag
-        x = F.relu(self.fc_shared1(x_combined))
-        x = F.relu(self.fc_shared2(x))
+        x_shared = F.relu(self.fc_shared1(x_combined))
+        x_shared = F.relu(self.fc_shared2(x_shared))
 
         # --- Actor Outputs ---
-        action_logits = self.action_head(x)
-        action_probs = F.softmax(action_logits, dim=-1)
+        action_type_logits = self.action_type_head(x_shared)
+        action_type_probs = F.softmax(action_type_logits, dim=-1)
 
-        walk_amount_logits = self.walk_amount_head(x)
-        walk_amount_probs = F.softmax(walk_amount_logits, dim=-1)
+        # Walk
+        walk_dx_logits = self.walk_dx_head(x_shared)
+        walk_dx_probs = F.softmax(walk_dx_logits, dim=-1)
 
-        kick_force_mean = self.kick_force_mean_head(x)
-        kick_force_log_std = self.kick_force_log_std_head(x)
-        kick_force_std = torch.exp(kick_force_log_std) # Sørger for positiv std dev
+        # Kick
+        kick_force_mean = self.kick_force_mean_head(x_shared)
+        kick_force_log_std = self.kick_force_log_std_head(x_shared)
+        kick_force_std = torch.exp(kick_force_log_std.clamp(-20, 2))  # Stabilitet
 
-        bazooka_angle_mean = self.bazooka_angle_mean_head(x)
-        bazooka_angle_log_std = self.bazooka_angle_log_std_head(x)
-        bazooka_angle_std = torch.exp(bazooka_angle_log_std)
+        # Bazooka
+        bazooka_angle_mean = self.bazooka_angle_mean_head(x_shared)
+        bazooka_angle_log_std = self.bazooka_angle_log_std_head(x_shared)
+        bazooka_angle_std = torch.exp(bazooka_angle_log_std.clamp(-20, 2))
 
-        bazooka_force_mean = self.bazooka_force_mean_head(x)
-        bazooka_force_log_std = self.bazooka_force_log_std_head(x)
-        bazooka_force_std = torch.exp(bazooka_force_log_std)
+        # Grenade
+        grenade_angle_mean = self.grenade_angle_mean_head(x_shared)
+        grenade_angle_log_std = self.grenade_angle_log_std_head(x_shared)
+        grenade_angle_std = torch.exp(grenade_angle_log_std.clamp(-20, 2))
+        grenade_force_mean = self.grenade_force_mean_head(x_shared)
+        grenade_force_log_std = self.grenade_force_log_std_head(x_shared)
+        grenade_force_std = torch.exp(grenade_force_log_std.clamp(-20, 2))
 
-        grenade_angle_mean = self.grenade_angle_mean_head(x)
-        grenade_angle_log_std = self.grenade_angle_log_std_head(x)
-        grenade_angle_std = torch.exp(grenade_angle_log_std)
-
-        grenade_force_mean = self.grenade_force_mean_head(x)
-        grenade_force_log_std = self.grenade_force_log_std_head(x)
-        grenade_force_std = torch.exp(grenade_force_log_std)
-
-        # Pakk actor outputs i en dict
         actor_outputs = {
-            'action_probs': action_probs,
-            'walk_amount_probs': walk_amount_probs,
+            'action_type_probs': action_type_probs,
+            'walk_dx_probs': walk_dx_probs,
             'kick_params': (kick_force_mean, kick_force_std),
-            'bazooka_params': (bazooka_angle_mean, bazooka_angle_std, bazooka_force_mean, bazooka_force_std),
+            'bazooka_params': (bazooka_angle_mean, bazooka_angle_std),  # Kun angle
             'grenade_params': (grenade_angle_mean, grenade_angle_std, grenade_force_mean, grenade_force_std)
         }
 
         # --- Critic Output ---
-        state_value = self.value_head(x)
+        state_value = self.value_head(x_shared)
 
         return actor_outputs, state_value

@@ -3,18 +3,20 @@ import asyncio
 import websockets
 import json
 import time
-import torch # For å kunne laste/lagre modell
-import numpy as np # For glidende gjennomsnitt
+import torch
+import numpy as np
 from .agent import A2CAgent
-from . import config
+from . import config  # Bruk relativ import
+
+
+# (Setup logging her hvis du vil, likt som i client.py eller server.py. For enkelhets skyld, print brukes her)
 
 async def run_agent():
     uri = f"ws://{config.SERVER_HOST}:{config.SERVER_PORT}"
     a2c_agent = A2CAgent()
     episode_count = 0
-    total_steps_across_episodes = 0
-    all_episode_rewards = []
-    losses_log = {'policy': [], 'value': [], 'entropy': []}
+    all_episode_rewards_log = []  # For plotting
+    losses_log = {'policy': [], 'value': [], 'entropy': []}  # For plotting
 
     checkpoint_path = "a2c_worms_checkpoint.pth"
     try:
@@ -25,200 +27,215 @@ async def run_agent():
     except Exception as e:
         print(f"Kunne ikke laste sjekkpunkt: {e}")
 
-    print(f"Kobler til server på {uri}...")
+    print(f"Starter {config.NUM_EPISODES} episoder med A2C agent...")
 
-    while episode_count < config.NUM_EPISODES:
-        episode_reward = 0
-        current_step_in_episode = 0
-        done = False
-        current_environment_json = None # Viktig å nullstille for hver episode
+    for episode_idx in range(config.NUM_EPISODES):
+        episode_reward_sum = 0
+        # Agentens buffere tømmes i agent.learn() eller agent.clear_buffers()
+        # a2c_agent.clear_buffers() # Kan kalles her for ekstra sikkerhet
 
+        game_over_flag = False
+        last_received_state = None  # For å ha state tilgjengelig for learn() hvis tilkobling brytes
+
+        print(f"\n--- Starter Episode {episode_idx + 1}/{config.NUM_EPISODES} ---")
         try:
             async with websockets.connect(uri, ping_interval=20, ping_timeout=20) as websocket:
-                print(f"--- Episode {episode_count + 1}/{config.NUM_EPISODES} ---")
-                print("Tilkoblet server.")
+                # 1. CONNECT og ASSIGN_ID
+                await websocket.send(json.dumps({"type": "CONNECT", "nick": "A2C-JetBot"}))
+                assign_id_msg_str = await websocket.recv()
+                assign_id_msg = json.loads(assign_id_msg_str)
 
-                # 1. SEND EN INITIAL HANDLING FOR Å FÅ FØRSTE STATE
-                initial_action_payload = {"action": "stand"} # Enkel start-handling
-                print(f"Sender initial handling: {initial_action_payload}")
-                await websocket.send(json.dumps(initial_action_payload))
-
-                # 2. MOTTA FØRSTE ENVIRONMENT ETTER INITIAL HANDLING
-                print("Venter på første environment fra server...")
-                initial_response_message = await websocket.recv()
-                print(f"Mottok første respons: {initial_response_message[:200]}...") # Logg starten av responsen
-
-                try:
-                    current_environment_json = json.loads(initial_response_message)
-                    if 'new-environment' not in current_environment_json or \
-                       'worms' not in current_environment_json.get('new-environment', {}) or \
-                       'map' not in current_environment_json.get('new-environment', {}):
-                        print("Ugyldig format på første environment (mangler nøkler). Hopper over episode.")
-                        await asyncio.sleep(1)
-                        episode_count += 1 # Tell som et forsøk
-                        continue
-                except json.JSONDecodeError:
-                     print("Mottok ugyldig JSON som første environment. Hopper over episode.")
-                     await asyncio.sleep(1)
-                     episode_count += 1
-                     continue
-                except Exception as e:
-                    print(f"Uventet feil ved behandling av første environment: {e}. Hopper over episode.")
+                if assign_id_msg.get("type") == "ASSIGN_ID":
+                    player_id = assign_id_msg.get("player_id")
+                    if player_id is None:
+                        print("FEIL: Fikk ikke player_id. Avslutter episoden.")
+                        await asyncio.sleep(1)  # Vent litt før neste forsøk
+                        continue  # Neste episode
+                    a2c_agent.set_player_id(player_id)
+                    print(f"Tilkoblet server. Tildelt Player ID: {a2c_agent.player_id}.")
+                else:
+                    print(f"FEIL: Forventet ASSIGN_ID, fikk: {assign_id_msg}. Avslutter episoden.")
                     await asyncio.sleep(1)
-                    episode_count += 1
                     continue
 
-                # Episodeløkke
-                while not done:
-                    print(f"Steg {current_step_in_episode + 1}: Nåværende state (start): {str(current_environment_json)[:100]}...")
-                    # 3. Agent velger handling basert på nåværende state
-                    action_to_send = a2c_agent.select_action(current_environment_json)
-
-                    # 4. Send handling til server
-                    print(f"Sender handling: {action_to_send}")
-                    await websocket.send(json.dumps(action_to_send))
-
-                    # 5. Motta resultat fra server
-                    print("Venter på respons fra server...")
-                    response_message = await websocket.recv()
-                    print(f"Mottok respons: {response_message[:200]}...")
-
+                # Hoved meldingsløkke for episoden
+                async for message_str in websocket:
                     try:
-                        response_data = json.loads(response_message)
+                        msg = json.loads(message_str)
+                        msg_type = msg.get("type")
+                        # print(f"DEBUG: Mottok: {msg_type} - {str(msg)[:150]}") # Kort debug
+
+                        if msg_type == "TURN_BEGIN":
+                            last_received_state = msg.get("state")  # Lagre for learn() ved evt. disconnect
+                            if msg.get("player_id") == a2c_agent.player_id:
+                                turn_idx = msg.get('turn_index', -1)
+                                print(f"  Min tur (P{a2c_agent.player_id}, Turn {turn_idx}). State mottatt.")
+                                if not last_received_state:
+                                    print("  FEIL: TURN_BEGIN mangler 'state'. Hopper over handling.")
+                                    continue
+
+                                action_to_send_obj = a2c_agent.select_action(last_received_state)
+                                action_payload = {
+                                    "type": "ACTION",
+                                    "player_id": a2c_agent.player_id,
+                                    "action": action_to_send_obj
+                                }
+                                print(f"    Sender handling: {action_payload['action']}")
+                                await websocket.send(json.dumps(action_payload))
+                            # else: Ikke min tur, ignorer
+
+                        elif msg_type == "TURN_RESULT":
+                            # Kun lagre reward hvis det var vår handling
+                            if msg.get("player_id") == a2c_agent.player_id:
+                                reward = msg.get("reward", 0.0)
+                                a2c_agent.store_reward(reward)
+                                episode_reward_sum += reward
+                                print(f"  Mottok reward: {reward}. Total ep. reward: {episode_reward_sum:.2f}")
+                            last_received_state = msg.get("state")  # Oppdater uansett
+
+                        elif msg_type == "TURN_END":
+                            pass  # Vent på neste TURN_BEGIN
+
+                        elif msg_type == "GAME_OVER":
+                            print(f"GAME OVER mottatt. Vinner: {msg.get('winner_id')}. ")
+                            game_over_flag = True
+                            final_state = msg.get("final_state")
+                            # Hvis siste handling ikke var vår, har vi ikke en reward for final_state.
+                            # A2C lærer vanligvis fra (s, a, r, s_next).
+                            # Hvis det ikke var vår tur sist, er siste reward i buffer fra forrige handling.
+                            # V(final_state) vil være 0.
+
+                            # Sørg for at vi har en state å sende til learn, selv om det var en annen spillers tur sist
+                            current_state_for_learn = final_state if final_state else last_received_state
+
+                            if not a2c_agent.rewards_buffer:  # Hvis ingen handlinger ble tatt av agenten
+                                print("  Ingen handlinger/rewards lagret denne episoden. Ingen læring.")
+                            else:
+                                pol_l, val_l, ent_l = a2c_agent.learn(current_state_for_learn, True)  # True for done
+                                if pol_l is not None:
+                                    losses_log['policy'].append(pol_l)
+                                    losses_log['value'].append(val_l)
+                                    losses_log['entropy'].append(ent_l)
+                                    print(
+                                        f"  Lært fra episode. Losses - P: {pol_l:.4f}, V: {val_l:.4f}, E: {ent_l:.4f}")
+                            break  # Bryt meldingsløkken, episoden er ferdig
+
+                        elif msg_type == "ERROR":
+                            print(f"FEIL fra server: {msg.get('msg')}")
+                            # Vurder å tømme buffere hvis feilen gjør episoden ugyldig
+                            # a2c_agent.clear_buffers()
+
                     except json.JSONDecodeError:
-                        print("Mottok ugyldig JSON respons fra server. Avslutter episode.")
-                        done = True
-                        response_data = None
-                    except websockets.exceptions.ConnectionClosed:
-                        print("Tilkobling lukket av server under spill. Avslutter episode.")
-                        done = True
-                        response_data = None
+                        print(f"FEIL: Kunne ikke dekode JSON fra server: {message_str}")
+                    except Exception as e_inner:
+                        print(f"FEIL i meldingsløkke: {type(e_inner).__name__} - {e_inner}")
+                        game_over_flag = True  # Anta episoden er korrupt
+                        break  # Bryt meldingsløkken
 
-                    if response_data:
-                        reward = response_data.get('score', 0)
-                        # VIKTIG: Diskuter med Ask om 'score' er steg-reward eller total score.
-                        # Hvis total score, må du beregne delta:
-                        # prev_total_score = current_environment_json.get('score', 0) # Eller en annen måte å hente forrige
-                        # step_reward = reward - prev_total_score
-                        # For nå, anta 'score' er steg-reward
-                        step_reward = reward
+                # Etter meldingsløkken (enten GAME_OVER eller disconnect)
+                if not game_over_flag and a2c_agent.rewards_buffer:  # Disconnect før GAME_OVER
+                    print("Advarsel: Tilkobling lukket før GAME_OVER, men data samlet. Lærer (antar 'done').")
+                    # Bruk sist kjente state hvis mulig
+                    state_for_learn = last_received_state if last_received_state else {}
+                    pol_l, val_l, ent_l = a2c_agent.learn(state_for_learn, True)
+                    if pol_l is not None:
+                        losses_log['policy'].append(pol_l);
+                        losses_log['value'].append(val_l);
+                        losses_log['entropy'].append(ent_l)
 
-                        done = response_data.get('finished', False)
-                        next_environment_json = response_data
-
-                        a2c_agent.store_reward(step_reward)
-                        episode_reward += step_reward
-
-                        current_environment_json = next_environment_json
-                        current_step_in_episode += 1
-                        total_steps_across_episodes += 1
-                    else: # Ingen responsdata, avslutt episoden
-                        done = True
-
-                    if done:
-                        print(f"Episode {episode_count + 1} ferdig etter {current_step_in_episode} steg. Total belønning: {episode_reward}")
-                        policy_l, value_l, entropy_l = a2c_agent.learn(current_environment_json, True)
-                        if policy_l is not None:
-                             losses_log['policy'].append(policy_l)
-                             losses_log['value'].append(value_l)
-                             losses_log['entropy'].append(entropy_l)
-                             print(f"  Losses - Policy: {policy_l:.4f}, Value: {value_l:.4f}, Entropy (neg): {entropy_l:.4f}")
-                        all_episode_rewards.append(episode_reward)
-
-                        if (episode_count + 1) % 50 == 0:
-                            try:
-                                torch.save(a2c_agent.network.state_dict(), checkpoint_path)
-                                print(f"Lagret modell sjekkpunkt til {checkpoint_path} ved episode {episode_count + 1}")
-                            except Exception as e_save:
-                                print(f"Kunne ikke lagre modell: {e_save}")
-                        break # Gå ut av while not done
-
-                episode_count += 1 # Øk etter at en episode er helt ferdig eller avbrutt og håndtert
-
-        except websockets.exceptions.ConnectionClosedOK:
-            print(f"Tilkobling lukket (OK) av server for episode {episode_count +1}.")
-            if a2c_agent.rewards and not done:
-                 print("Tilkobling lukket før episoden var 'finished'. Prøver å lære.")
-                 valid_last_state = current_environment_json if current_environment_json else {}
-                 policy_l, value_l, entropy_l = a2c_agent.learn(valid_last_state, True)
-                 if policy_l is not None:
-                      losses_log['policy'].append(policy_l); losses_log['value'].append(value_l); losses_log['entropy'].append(entropy_l)
-                 all_episode_rewards.append(episode_reward)
-                 a2c_agent.log_probs, a2c_agent.values, a2c_agent.rewards, a2c_agent.entropies = [], [], [], []
-            episode_count +=1
-            await asyncio.sleep(1)
-
-        except websockets.exceptions.ConnectionClosedError as e:
-            print(f"Tilkobling lukket med feil: {e} (Episode {episode_count+1}). Prøver igjen om 5s.")
-            await asyncio.sleep(5)
-
+        except websockets.exceptions.ConnectionClosed as e:
+            print(f"Tilkobling lukket: {e}. Prøver neste episode.")
+            if not game_over_flag and a2c_agent.rewards_buffer:  # Lær hvis data finnes
+                print("  Lærer fra ufullstendig episode (ConnectionClosed).")
+                state_for_learn = last_received_state if last_received_state else {}
+                pol_l, val_l, ent_l = a2c_agent.learn(state_for_learn, True)
+                if pol_l: losses_log['policy'].append(pol_l); losses_log['value'].append(val_l); losses_log[
+                    'entropy'].append(ent_l)
         except ConnectionRefusedError:
-            print(f"Kunne ikke koble til serveren {uri}. Er serveren startet? Prøver igjen om 10s.")
+            print(f"FEIL: Kunne ikke koble til server {uri}. Er den startet? Venter 10s.")
             await asyncio.sleep(10)
+            continue  # Prøv å starte en ny episodeforbindelse
+        except Exception as e_outer:
+            print(f"Alvorlig FEIL i episode {episode_idx + 1}: {type(e_outer).__name__} - {e_outer}")
+            if not game_over_flag and a2c_agent.rewards_buffer:
+                print("  Lærer fra ufullstendig episode (Alvorlig feil).")
+                state_for_learn = last_received_state if last_received_state else {}
+                pol_l, val_l, ent_l = a2c_agent.learn(state_for_learn, True)
+                if pol_l: losses_log['policy'].append(pol_l); losses_log['value'].append(val_l); losses_log[
+                    'entropy'].append(ent_l)
+            await asyncio.sleep(5)  # Pause før neste forsøk
 
-        except Exception as e:
-            print(f"Uventet feil i episode {episode_count + 1}: {type(e).__name__} - {e}")
-            if a2c_agent.rewards and not done:
-                try:
-                    print("Uventet feil midt i episoden. Prøver å lære.")
-                    valid_last_state = current_environment_json if current_environment_json else {}
-                    policy_l, value_l, entropy_l = a2c_agent.learn(valid_last_state, True)
-                    if policy_l is not None:
-                        losses_log['policy'].append(policy_l); losses_log['value'].append(value_l); losses_log['entropy'].append(entropy_l)
-                    all_episode_rewards.append(episode_reward)
-                except Exception as learn_e:
-                    print(f"Feil under læring etter feil: {learn_e}")
-                finally:
-                    a2c_agent.log_probs, a2c_agent.values, a2c_agent.rewards, a2c_agent.entropies = [], [], [], []
-            episode_count +=1
-            print("Prøver å fortsette eller koble til på nytt om 5s...")
-            await asyncio.sleep(5)
+        all_episode_rewards_log.append(episode_reward_sum)
+        print(f"--- Episode {episode_idx + 1} avsluttet. Total belønning: {episode_reward_sum:.2f} ---")
 
-    print("Trening ferdig.")
+        # Lagre sjekkpunkt periodisk
+        if (episode_idx + 1) % 50 == 0:
+            try:
+                torch.save(a2c_agent.network.state_dict(), checkpoint_path)
+                print(f"Lagret modell sjekkpunkt til {checkpoint_path} etter episode {episode_idx + 1}")
+            except Exception as e_save:
+                print(f"Kunne ikke lagre modell: {e_save}")
+
+        # Liten pause mellom episoder for å unngå å hamre serveren
+        await asyncio.sleep(0.1)
+
+    print("\nTrening ferdig etter alle episoder.")
+    # Plotting (samme som før)
     try:
         import matplotlib.pyplot as plt
-        # Beregn glidende gjennomsnitt for rewards
         avg_rewards = []
-        if all_episode_rewards: # Sjekk at listen ikke er tom
-            window_size = min(100, len(all_episode_rewards)) # Unngå feil hvis færre enn 100 episoder
-            avg_rewards = [np.mean(all_episode_rewards[max(0, i - window_size + 1):i + 1]) for i in range(len(all_episode_rewards))]
-
+        if all_episode_rewards_log:
+            window_size = min(100, len(all_episode_rewards_log))
+            if window_size > 0:
+                avg_rewards = [np.mean(all_episode_rewards_log[max(0, i - window_size + 1):i + 1]) for i in
+                               range(len(all_episode_rewards_log))]
 
         plt.figure(figsize=(18, 6))
         plt.subplot(1, 3, 1)
-        plt.plot(all_episode_rewards, label='Rå belønning', alpha=0.6)
+        plt.plot(all_episode_rewards_log, label='Rå belønning', alpha=0.6)
         if avg_rewards: plt.plot(avg_rewards, label=f'Glidende gj.snitt ({window_size} ep)', color='red', linewidth=2)
-        plt.xlabel("Episode")
-        plt.ylabel("Total belønning")
+        plt.xlabel("Episode");
+        plt.ylabel("Total belønning");
         plt.title("Belønning per episode")
-        plt.legend()
+        plt.legend();
         plt.grid(True)
 
-        if losses_log['policy']:
+        if losses_log['policy']:  # Sjekk om det er noe å plotte
             plt.subplot(1, 3, 2)
             plt.plot(losses_log['policy'], label='Policy Loss')
-            plt.xlabel("Læringssteg (episoder)")
-            plt.ylabel("Policy Loss")
+            plt.xlabel("Læringssteg");
+            plt.ylabel("Policy Loss");
             plt.title("Policy (Actor) Tap")
-            plt.legend()
+            plt.legend();
             plt.grid(True)
 
             plt.subplot(1, 3, 3)
             plt.plot(losses_log['value'], label='Value Loss', color='green')
-            plt.xlabel("Læringssteg (episoder)")
-            plt.ylabel("Value Loss")
+            plt.xlabel("Læringssteg");
+            plt.ylabel("Value Loss");
             plt.title("Value (Critic) Tap")
-            plt.legend()
+            plt.legend();
             plt.grid(True)
 
+        # Du kan også plotte entropi hvis du vil:
+        # if losses_log['entropy']:
+        #     plt.figure() # Ny figur for entropi
+        #     plt.plot(losses_log['entropy'], label='Entropy (neg)')
+        #     plt.xlabel("Læringssteg"); plt.ylabel("Entropy (neg)"); plt.title("Entropi")
+        #     plt.legend(); plt.grid(True)
+
         plt.tight_layout()
-        plt.savefig("training_plots_worms.png")
-        print("Lagret treningsplot som training_plots_worms.png")
-        # plt.show() # Vurder å kommentere ut plt.show() hvis du kjører mange tester uten interaksjon
+        plt.savefig("training_plots_worms_a2c_new_protocol.png")
+        print("Lagret treningsplot som training_plots_worms_a2c_new_protocol.png")
+        # plt.show() # Kommenter ut hvis du kjører uten GUI
     except ImportError:
         print("Matplotlib ikke installert. Kan ikke plotte resultater.")
     except Exception as plot_e:
         print(f"Kunne ikke plotte resultater: {type(plot_e).__name__} - {plot_e}")
 
+
 if __name__ == "__main__":
-    asyncio.run(run_agent())
+    try:
+        asyncio.run(run_agent())
+    except KeyboardInterrupt:
+        print("\nTrening avbrutt av bruker.")
