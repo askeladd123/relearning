@@ -13,23 +13,23 @@ from typing import Any
 import websockets
 from websockets.exceptions import ConnectionClosed
 
-TRACE_LEVEL_NUM = 5
-logging.addLevelName(TRACE_LEVEL_NUM, "TRACE")
-logging.TRACE = TRACE_LEVEL_NUM
-
-def trace(self, message, *args, **kwargs):
-    if self.isEnabledFor(TRACE_LEVEL_NUM):
-        self._log(TRACE_LEVEL_NUM, message, args, **kwargs)
-
-logging.Logger.trace = trace
-
+# Removed custom TRACE level; using built-in logging levels
 
 def setup_logging() -> logging.Logger:
     parser = argparse.ArgumentParser(description="W.O.R.M.S. server")
-    parser.add_argument("--log-level", choices=["TRACE", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], default="INFO")
+    parser.add_argument(
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        default="INFO",
+        help="set logging level"
+    )
     args = parser.parse_args()
     level = getattr(logging, args.log_level)
-    logging.basicConfig(level=level, format="%(asctime)s %(levelname)-8s %(name)s: %(message)s", datefmt="%H:%M:%S")
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+        datefmt="%H:%M:%S"
+    )
     return logging.getLogger("server")
 
 logger = setup_logging()
@@ -48,8 +48,8 @@ class WSState(IntEnum):
 class WormsServer:
     def __init__(self) -> None:
         self.core = GameCore()
-        self.clients = {}
-        self.turn_order = []
+        self.clients: dict[Any, dict[str, Any]] = {}
+        self.turn_order: list[Any] = []
         self.idx = 0
         self.turn_counter = 0
         self.game_started = False

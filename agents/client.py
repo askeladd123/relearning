@@ -8,21 +8,13 @@ import random
 
 import websockets
 
-# ─── Define custom TRACE level ─────────────────────────────────────
-TRACE_LEVEL_NUM = 5
-logging.addLevelName(TRACE_LEVEL_NUM, "TRACE")
-logging.TRACE = TRACE_LEVEL_NUM               # expose logging.TRACE
-def trace(self, message, *args, **kwargs):
-    if self.isEnabledFor(TRACE_LEVEL_NUM):
-        self._log(TRACE_LEVEL_NUM, message, args, **kwargs)
-logging.Logger.trace = trace
+# Removed custom TRACE level; using built-in logging levels
 
-# ─── Parse --log-level & configure ────────────────────────────────
 def setup_logging() -> logging.Logger:
     parser = argparse.ArgumentParser(description="W.O.R.M.S. bot client")
     parser.add_argument(
         "--log-level",
-        choices=["TRACE", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
         default="INFO",
         help="set logging level"
     )
@@ -61,7 +53,7 @@ async def start_client() -> None:
                 player_id = msg["player_id"]
                 logger.info("assigned player_id=%d", player_id)
                 continue
-            if t == "TURN_BEGIN" and msg["player_id"] == player_id:
+            if t == "TURN_BEGIN" and msg.get("player_id") == player_id:
                 action = random.choice(ACTIONS)
                 payload = {"type": "ACTION", "player_id": player_id, "action": action}
                 await ws.send(json.dumps(payload))
