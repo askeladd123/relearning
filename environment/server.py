@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""
-Turn‑based WebSocket server (handshake = CONNECT → ASSIGN_ID).
-
-Works with websockets ≥ 12.x (no .open / .closed attributes).
-"""
+"""Turn‑based WebSocket server for W.O.R.M.S. (websockets ≥ 12.x)."""
 from __future__ import annotations
 
 import asyncio
@@ -26,9 +22,6 @@ HOST, PORT = "127.0.0.1", 8765
 
 
 class WSState(IntEnum):
-    """Local alias of websockets.protocol.State values (to avoid importing
-    a private enum)."""
-
     CONNECTING = 0
     OPEN = 1
     CLOSING = 2
@@ -36,25 +29,20 @@ class WSState(IntEnum):
 
 
 class WormsServer:
-    """
-    Handles exactly one match:
-      • waits until GameCore.expected_players() sockets connect
-      • cycles turns until game_over()
-      • stops if every player disconnects
-    """
-
+    """Handles exactly one match."""
     def __init__(self) -> None:
         self.core = GameCore()
-        self.clients: dict[Any, int] = {}          # websocket → player_id
-        self.turn_order: list[Any] = []            # rotation of sockets
+        self.clients: dict[Any, int] = {}      # websocket → player_id
+        self.turn_order: list[Any] = []        # rotation of sockets
+        self.idx = 0                           # current index in turn_order
+        self.turn_counter = 0                  # global turn index
         self.game_started = False
-        self.idx = 0                               # current turn index
 
     # --------------------------------------------------------------------- #
     # Connection‑lifetime handler
     # --------------------------------------------------------------------- #
     async def accept(self, ws: Any) -> None:
-        """Handshake + linger until socket closes (without reading)."""
+        """Handshake (CONNECT → ASSIGN_ID) then keep alive until close."""
         try:
             raw = await asyncio.wait_for(ws.recv(), timeout=10)
             msg = json.loads(raw)
@@ -81,57 +69,54 @@ class WormsServer:
             self.game_started = True
             asyncio.create_task(self.game_loop())
 
-        # 3. keep connection alive without reading again
+        # 3. keep connection alive without further reading
         try:
             await ws.wait_closed()
         finally:
             self.remove(ws)
 
     # --------------------------------------------------------------------- #
-    # Game loop (runs once per match)
+    # Main game loop
     # --------------------------------------------------------------------- #
     async def game_loop(self) -> None:
         print("[server] Game started")
         while self.turn_order:
-            # wrap index if list shrank
+            # Wrap idx if list shrank
             if self.idx >= len(self.turn_order):
                 self.idx = 0
 
-            # abort if everyone left
-            if not self.turn_order:
+            if not self.turn_order:     # everyone left
                 break
 
-            # check for finished game
+            # Check for finished game
             if self.core.game_over():
-                await self.broadcast({"type": "GAME_OVER", **self.core.final_info()})
-                print("[server] Game over broadcasted")
+                await self.broadcast(
+                    {"type": "GAME_OVER", **self.core.final_info()}
+                )
+                print("[server] Game over")
                 return
 
             ws = self.turn_order[self.idx]
-            # drop socket if it has entered closing state
+
+            # Skip closing sockets
             if ws.state != WSState.OPEN:
                 self.remove(ws, quiet=True)
                 continue
 
             pid = self.clients[ws]
 
-            # ------------------------------------------------ TURN_BEGIN --
-            try:
-                await ws.send(
-                    json.dumps(
-                        {
-                            "type": "TURN_BEGIN",
-                            "player_id": pid,
-                            "state": self.core.state,
-                            "time_limit_ms": 15000,
-                        }
-                    )
-                )
-            except ConnectionClosed:
-                self.remove(ws)
+            # -------- TURN_BEGIN -----
+            begin_msg = {
+                "type": "TURN_BEGIN",
+                "turn_index": self.turn_counter,
+                "player_id": pid,
+                "state": self.core.state,
+                "time_limit_ms": 15_000,
+            }
+            if not await self.safe_send(ws, begin_msg):
                 continue
 
-            # ------------------------------------------------ wait ACTION --
+            # -------- wait ACTION ----
             try:
                 raw = await asyncio.wait_for(ws.recv(), timeout=15)
                 msg = json.loads(raw)
@@ -139,29 +124,34 @@ class WormsServer:
                     raise ValueError
             except (asyncio.TimeoutError, ValueError):
                 await self.safe_send(
-                    ws,
-                    {"type": "ERROR", "msg": "timeout or invalid action"},
+                    ws, {"type": "ERROR", "msg": "timeout or invalid action"}
                 )
+                # skip turn
                 self.idx += 1
+                self.turn_counter += 1
                 continue
             except ConnectionClosed:
                 self.remove(ws)
                 continue
 
-            # ------------------------------------------------ apply step --
-            new_state, reward = self.core.step(pid, msg.get("action", {}))
+            # -------- apply step -----
+            action = msg.get("action", {})
+            new_state, reward = self.core.step(pid, action)
+
             await self.broadcast(
                 {
                     "type": "TURN_RESULT",
+                    "turn_index": self.turn_counter,
                     "player_id": pid,
                     "state": new_state,
                     "reward": reward,
                 }
             )
 
-            # ------------------------------------------------ end turn ----
+            # -------- end turn -------
             self.idx += 1
-            if self.turn_order:  # may have shrunk!
+            self.turn_counter += 1
+            if self.turn_order:
                 next_ws = self.turn_order[self.idx % len(self.turn_order)]
                 await self.broadcast(
                     {
@@ -177,8 +167,8 @@ class WormsServer:
     # --------------------------------------------------------------------- #
     async def broadcast(self, msg: dict) -> None:
         """Send JSON to every player; drop those that closed."""
-        data = json.dumps(msg)
         dead: list[Any] = []
+        data = json.dumps(msg)
         for ws in list(self.turn_order):
             try:
                 await ws.send(data)
@@ -187,19 +177,20 @@ class WormsServer:
         for ws in dead:
             self.remove(ws, quiet=True)
 
-    async def safe_send(self, ws: Any, msg: dict) -> None:
-        """Send but ignore ConnectionClosed."""
+    async def safe_send(self, ws: Any, msg: dict) -> bool:
+        """Send but ignore ConnectionClosed. Return False if closed."""
         try:
             await ws.send(json.dumps(msg))
+            return True
         except ConnectionClosed:
             self.remove(ws, quiet=True)
+            return False
 
     def remove(self, ws: Any, *, quiet: bool = False) -> None:
-        """Drop socket from lists; adjust index if needed."""
+        """Remove socket from all lists, adjust idx."""
         if ws in self.turn_order:
             idx = self.turn_order.index(ws)
             self.turn_order.remove(ws)
-            # keep idx pointing to same logical player
             if idx <= self.idx and self.idx > 0:
                 self.idx -= 1
         if ws in self.clients:
@@ -208,8 +199,6 @@ class WormsServer:
                 print(f"[server] Player {pid} disconnected")
 
 
-# --------------------------------------------------------------------------- #
-# entry‑point
 # --------------------------------------------------------------------------- #
 async def main() -> None:
     async with websockets.serve(WormsServer().accept, HOST, PORT):

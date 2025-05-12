@@ -1,48 +1,43 @@
-# WebSocket JSON Protocol
+# W.O.R.M.S. WebSocket JSON Protocol
 
-This document defines every JSON message exchanged between **clients** (bots or browsers) and the **Worms Server**.  All messages are single JSON objects sent over a WebSocket connection.  Each object **must** contain a `type` field that determines its structure.
+All messages are JSON objects sent over a WebSocket.  
+Each object **must** include a `"type"` field that selects one of the structures below.  
+Clients **must ignore** unknown keys so the protocol can evolve.
 
-*Numbers below use JavaScript / Python conventions — i.e. IEEE‑754 double precision floats for real numbers and signed 32‑bit integers for IDs unless stated otherwise.*
+Numbers follow JS/Python IEEE‑754 semantics unless noted.
 
 ---
 
-## 1  Overall flow
+## Overall flow
 
 ```text
-          (connect)                    ┌──────────────┐
- Client ──────────────────────────────►│  Server      │
-  ▲     ① CONNECT                      │              │
-  │     ② ASSIGN_ID                    │   Turn loop  │
-  │                                    │     …        │
-  │  ┌─────────────────────────────────┘
-  │  │      (repeat until GAME_OVER)
-  │  │
-  │  │ ③ TURN_BEGIN        ─→  only the player whose turn it is
-  │  │ ④ ACTION            ←─  that same player (within 15 s)
-  │  │ ⑤ TURN_RESULT       ─→  broadcast to *all* players & spectators
-  │  │ ⑥ TURN_END          ─→  broadcast; announces next player
-  │  │           (back to ③ for next player)
-  │  │
-  │  └───▶ GAME_OVER        ─→  broadcast once `game_over()` becomes true
-  │
-  └──────── connection closes or stays open for post‑game chat
-```
-
-Client‑to‑server messages are **bold**, server‑to‑client are *italic*, and broadcasts are sent to everyone (players **and** spectators).
+            Client                                  Server
+             │                                         │
+             ├─▶  CONNECT                              │
+             │     (nick)                              │
+             │                                         │
+             │   ASSIGN_ID  ◀──────────────────────────┤
+             │                                         │
+      repeat │                                         │
+      until  │  TURN_BEGIN ───────────────────────────▶│
+   GAME_OVER │  ACTION       ◀──────────────────────── │
+             │  TURN_RESULT ─────────────────────────▶ │
+             │  TURN_END    ─────────────────────────▶ │
+             │                                         │
+             └─▶ GAME_OVER   ◀─────────────────────────┤
+````
 
 ---
 
-## 2  Message catalog
+## 1  Messages
 
-### 2.1  CONNECT  (client → server)
+### 1.1 CONNECT  (client → server)
 
-| Field       | Type    | Required | Description                                                     |
-| ----------- | ------- | -------- | --------------------------------------------------------------- |
-| `type`      | string  | ✓        | Always the literal string `"CONNECT"`.                          |
-| `nick`      | string  | ✗        | Human‑readable nickname (shown in logs/UI).                     |
-| `spectator` | boolean | ✗        | `true` to join as a non‑playing spectator. Defaults to `false`. |
-
-#### Example
+| Field       | Type    | Required | Description                       |
+| ----------- | ------- | -------- | --------------------------------- |
+| `type`      | string  | ✓        | `"CONNECT"`                       |
+| `nick`      | string  | ✗        | Human nickname (for logs / UI)    |
+| `spectator` | boolean | ✗        | `true` to observe without playing |
 
 ```json
 { "type": "CONNECT", "nick": "bot‑42" }
@@ -50,12 +45,12 @@ Client‑to‑server messages are **bold**, server‑to‑client are *italic*, a
 
 ---
 
-### 2.2  ASSIGN\_ID  (*server → client*)
+### 1.2 ASSIGN\_ID  (server → client)
 
-| Field       | Type    | Required | Description                                            |
-| ----------- | ------- | -------- | ------------------------------------------------------ |
-| `type`      | string  | ✓        | `"ASSIGN_ID"`                                          |
-| `player_id` | integer | ✗        | Positive integer starting at 1. Absent for spectators. |
+| Field       | Type    | Required | Description                                     |
+| ----------- | ------- | -------- | ----------------------------------------------- |
+| `type`      | string  | ✓        | `"ASSIGN_ID"`                                   |
+| `player_id` | integer | ✗        | Omitted for spectators; starts at 1 for players |
 
 ```json
 { "type": "ASSIGN_ID", "player_id": 2 }
@@ -63,116 +58,89 @@ Client‑to‑server messages are **bold**, server‑to‑client are *italic*, a
 
 ---
 
-### 2.3  TURN\_BEGIN  (*server → client*)
+### 1.3 TURN\_BEGIN  (server → all)
 
-Sent to **all** sockets at the beginning of each turn.  Only the targeted player is allowed to act.
-
-| Field           | Type                      | Required | Description                                       |
-| --------------- | ------------------------- | -------- | ------------------------------------------------- |
-| `type`          | string                    | ✓        | `"TURN_BEGIN"`                                    |
-| `player_id`     | integer                   | ✓        | ID whose turn it is                               |
-| `state`         | [Game State](#game-state) | ✓        | Full current state snapshot                       |
-| `time_limit_ms` | integer                   | ✓        | How long (milliseconds) the player has to respond |
-
-Example (truncated):
-
-```json
-{
-  "type": "TURN_BEGIN",
-  "player_id": 1,
-  "state": { «…see below…» },
-  "time_limit_ms": 15000
-}
-```
+| Field           | Type       | Required | Description                        |
+| --------------- | ---------- | -------- | ---------------------------------- |
+| `type`          | string     | ✓        | `"TURN_BEGIN"`                     |
+| `turn_index`    | integer    | ✓        | 0‑based global turn counter        |
+| `player_id`     | integer    | ✓        | ID whose turn it is                |
+| `state`         | Game State | ✓        | Full snapshot                      |
+| `time_limit_ms` | integer    | ✓        | How long that player has to answer |
 
 ---
 
-### 2.4  ACTION  (client → server)
+### 1.4 ACTION  (client → server)
 
-Must be sent **only by the player whose turn it is** within `time_limit_ms`.
+Sent **only** by the `player_id` that just received `TURN_BEGIN`.
 
-| Field       | Type    | Required | Description                     |
-| ----------- | ------- | -------- | ------------------------------- |
-| `type`      | string  | ✓        | `"ACTION"`                      |
-| `player_id` | integer | ✓        | Must match sender’s assigned ID |
-| `action`    | object  | ✓        | One of the structures below     |
+| Field       | Type   | Required | Description               |
+| ----------- | ------ | -------- | ------------------------- |
+| `type`      | string | ✓        | `"ACTION"`                |
+| `player_id` | int    | ✓        | Must match sender’s ID    |
+| `action`    | object | ✓        | One of the variants below |
 
-#### `action` object variants
+#### `action` variants
 
-| Variant  | Required keys                         | Extra keys                                                                                                                 |
-| -------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `stand`  | `{"action":"stand"}`                  | none                                                                                                                       |
-| `walk`   | `{"action":"walk","amount-x":float}`  | none                                                                                                                       |
-| `attack` | `{"action":"attack","weapon":string}` | Depends on weapon:<br/>• `kick` → `force` (float 0‑100)<br/>• `bazooka` → `angle` (deg)<br/>• `grenade` → `angle`, `force` |
-
-Example:
-
-```json
-{
-  "type": "ACTION",
-  "player_id": 2,
-  "action": { "action": "attack", "weapon": "bazooka", "angle": 45.0 }
-}
-```
+| Variant         | Required keys                                                                     | Notes                           |
+| --------------- | --------------------------------------------------------------------------------- | ------------------------------- |
+| stand           | `{ "action": "stand" }`                                                           | –                               |
+| walk            | `{ "action": "walk", "dx": float }`                                               | `dx` in world units (+ → right) |
+| attack\:kick    | `{ "action": "attack", "weapon": "kick", "force": 0‑100 }`                        | –                               |
+| attack\:bazooka | `{ "action": "attack", "weapon": "bazooka", "angle_deg": float }`                 | 0 ° = right, CCW positive       |
+| attack\:grenade | `{ "action": "attack", "weapon": "grenade", "angle_deg": float, "force": 0‑100 }` | –                               |
 
 ---
 
-### 2.5  TURN\_RESULT  (*server → all*)
+### 1.5 TURN\_RESULT  (server → all)
 
-Broadcast immediately after an `ACTION` is processed.
-
-| Field       | Type                      | Required | Description                                |
-| ----------- | ------------------------- | -------- | ------------------------------------------ |
-| `type`      | string                    | ✓        | `"TURN_RESULT"`                            |
-| `player_id` | integer                   | ✓        | The acting player                          |
-| `state`     | [Game State](#game-state) | ✓        | Updated state after action                 |
-| `reward`    | number                    | ✗        | Per‑turn reward (used for RL); 0 if unused |
-
----
-
-### 2.6  TURN\_END  (*server → all*)
-
-Announces whose turn is next.
-
-| Field            | Type    | Required | Description                               |
-| ---------------- | ------- | -------- | ----------------------------------------- |
-| `type`           | string  | ✓        | `"TURN_END"`                              |
-| `next_player_id` | integer | ✓        | ID who will receive the next `TURN_BEGIN` |
+| Field        | Type       | Required | Description                       |
+| ------------ | ---------- | -------- | --------------------------------- |
+| `type`       | string     | ✓        | `"TURN_RESULT"`                   |
+| `turn_index` | integer    | ✓        | Same index as the triggering turn |
+| `player_id`  | integer    | ✓        | The acting player                 |
+| `state`      | Game State | ✓        | Resulting state                   |
+| `reward`     | number     | ✗        | Optional per‑turn reward          |
 
 ---
 
-### 2.7  GAME\_OVER  (*server → all*)
+### 1.6 TURN\_END  (server → all)
 
-Sent exactly once when `GameCore.game_over()` becomes *True*.
-
-| Field         | Type                      | Required | Description                       |
-| ------------- | ------------------------- | -------- | --------------------------------- |
-| `type`        | string                    | ✓        | `"GAME_OVER"`                     |
-| `winner_id`   | integer                   | ✗        | ID of the winning player (if any) |
-| `final_state` | [Game State](#game-state) | ✓        | Final snapshot                    |
+| Field            | Type    | Required | Description       |
+| ---------------- | ------- | -------- | ----------------- |
+| `type`           | string  | ✓        | `"TURN_END"`      |
+| `next_player_id` | integer | ✓        | Who will act next |
 
 ---
 
-### 2.8  ERROR  (*server → client*)
+### 1.7 GAME\_OVER  (server → all)
 
-Sent to a player when their action is invalid or late.
-
-| Field  | Type   | Required | Description                      |
-| ------ | ------ | -------- | -------------------------------- |
-| `type` | string | ✓        | `"ERROR"`                        |
-| `msg`  | string | ✓        | Human‑readable error description |
+| Field         | Type       | Required | Description        |
+| ------------- | ---------- | -------- | ------------------ |
+| `type`        | string     | ✓        | `"GAME_OVER"`      |
+| `winner_id`   | integer    | ✗        | Winner’s ID if any |
+| `final_state` | Game State | ✓        | Final snapshot     |
 
 ---
 
-## 3  <code id="game-state">Game State</code>
+### 1.8 ERROR  (server → client)
+
+| Field  | Type   | Required | Description         |
+| ------ | ------ | -------- | ------------------- |
+| `type` | string | ✓        | `"ERROR"`           |
+| `msg`  | string | ✓        | Human‑readable text |
+
+---
+
+## 2  Game State
 
 ```jsonc
 {
   "worms": [
-    { "id": 0, "health": 100, "x": 1.0, "y": 1.0 },
-    { "id": 1, "health":  90, "x": 6.0, "y": 2.0 }
+    { "id": 0, "health": 100, "x": 3.20, "y": 1.75 },
+    { "id": 1, "health":  90, "x": 6.00, "y": 2.00 }
   ],
-  "map": [        // 2‑D array of ints
+  "map": [
     [1,0,0,0,0,0,0,0],
     [1,0,0,0,0,0,0,0],
     [1,1,1,0,0,0,1,0],
@@ -181,9 +149,24 @@ Sent to a player when their action is invalid or late.
 }
 ```
 
-| Key     | Type          | Description                                                                                        |
-| ------- | ------------- | -------------------------------------------------------------------------------------------------- |
-| `worms` | array         | Each worm’s *id*, *health* (0‑100), and *position* in **world units** (floats; 1 unit = one tile). |
-| `map`   | 2‑D int array | `1` = terrain, `0` = empty/water.  Index 0,0 is top‑left.                                          |
+| Key     | Type          | Description                                                                                   |
+| ------- | ------------- | --------------------------------------------------------------------------------------------- |
+| `worms` | array         | Each worm’s `id`, `health` (0‑100), and **position** in world units (floats; 1 unit = 1 tile) |
+| `map`   | 2‑D int array | `1` = solid terrain, `0` = empty/water. Index (0,0) is top‑left                               |
 
-Future versions may extend the state object (e.g. wind, pickups).  Clients **must ignore** unknown keys.
+Clients **must ignore** any extra keys they do not understand.
+
+---
+
+## 3  Rendering rule (client hint)
+
+To draw the map centred in the canvas:
+
+```text
+tile = min(canvasW / cols, canvasH / rows)
+xMargin = (canvasW − tile*cols)/2
+yMargin = (canvasH − tile*rows)/2
+tile(i,j) at (xMargin + i*tile , yMargin + j*tile)
+```
+
+This leaves a minimal margin on one axis while fully filling the other.
