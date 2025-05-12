@@ -1,5 +1,3 @@
-# environment/game_core.py
-
 import copy
 import logging
 from typing import Any, Dict, Tuple
@@ -28,26 +26,25 @@ class GameCore:
         return 2
 
     def step(self, player_id: int, action: Dict[str, Any]) -> Tuple[Dict[str, Any], float]:
-        logger.trace("GameCore.step: player_id=%d action=%r", player_id, action)
         state = self.state
         worms = state["worms"]
-        grid = state["map"]
-        rows = len(grid)
-        cols = len(grid[0])
-
         idx = player_id - 1
         worm = worms[idx]
 
         if action.get("action") == "walk":
             dx = float(action.get("dx", 0.0))
             new_x = worm["x"] + dx
-            new_x = max(0.0, min(new_x, cols - 1e-6))
-            ty = int(worm["y"])
-            tx = int(new_x)
-            if 0 <= ty < rows and grid[ty][tx] == 0:
-                worm["x"] = new_x
+            worm["x"] = max(0.0, min(new_x, 7.99))
 
         return copy.deepcopy(state), 0.0
+
+    def get_state_with_nicks(self, clients: Dict[Any, Dict[str, Any]]) -> Dict[str, Any]:
+        state_copy = copy.deepcopy(self.state)
+        for ws, info in clients.items():
+            pid = info["id"] - 1
+            if 0 <= pid < len(state_copy["worms"]):
+                state_copy["worms"][pid]["nick"] = info.get("nick", f"Player {pid + 1}")
+        return state_copy
 
     def game_over(self) -> bool:
         return False

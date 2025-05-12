@@ -1,6 +1,8 @@
 *Turn‑based Reinforcement‑Learning playground*
 
-The goal is to train an AI to play W.O.R.M.S.. I also want to be able to test the game against the agents. That is why I chose to modularize into components, that communicate through websockets:
+The goal is to train an AI to play free-for-all W.O.R.M.S.. This means that each agent controls one worm each, and the goal is to kill all other opponents.
+
+I want to be able to test the game against the ai agents. That is why I chose to modularize into components, that communicate through websockets:
 - server / environment: manages communication with clients and simulates the environment
 - cli client / ai agent: choses actions based on the gives environment, and learns
 - web client: user can take the role as a player and manually chose actions against the AI. This is visualize as a simple game interface in the browser
@@ -109,17 +111,3 @@ npx serve public # or any static server
 # Random bot
 cd agents && python client.py
 ```
-
----
-
-## 5  Extensibility Guidelines
-
-* **Physics upgrades** Add terrain slopes or water by extending the `map`
-  encoding; clients ignore unknown keys.
-* **New actions** Introduce additional `action` variants in `json-docs.md`
-  (clients will ignore ones they don’t understand).
-* **More players** `GameCore.expected_players()` controls how many `CONNECT`s
-  start a match.
-* **Rewards** Fill the `reward` field in `TURN_RESULT`; RL agents train on it.
-
----

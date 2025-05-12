@@ -1,4 +1,4 @@
-import { Application, Container, Graphics } from 'pixi.js';
+import { Application, Container, Graphics, Text } from 'pixi.js';
 
 let lastEnv = null;
 let playerId = null;
@@ -102,7 +102,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   const actionParams = document.getElementById('action-params');
   const sendBtn = document.getElementById('send-action');
 
-  // Populate dropdown
   ACTIONS.forEach((a, i) => {
     const opt = document.createElement('option');
     let label = a.action;
@@ -136,17 +135,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   buildParams();
 
   function updateUI() {
-    // Set status text
     if (playerId != null) {
       statusBar.textContent = myTurn
         ? `Your turn (Player ${playerId})`
         : `Waiting for Player ${currentPlayer}`;
     }
-    // Enable/disable controls
     sendBtn.disabled = !myTurn;
     actionSelect.disabled = !myTurn;
     actionParams.querySelectorAll('input').forEach(i => { i.disabled = !myTurn; });
-    // Show or hide overlay
     overlay.style.visibility = myTurn ? 'hidden' : 'visible';
   }
 
@@ -197,16 +193,54 @@ document.addEventListener('DOMContentLoaded', async () => {
       });
     });
 
-    // Draw worms (world‑unit coords)
+    // Draw worms with health bar and name/id
     worms.forEach((w) => {
       const cx = xMargin + w.x * tileSize;
       const cy = yMargin + w.y * tileSize;
       const r = tileSize * 0.4;
+
+      // Circle
       const c = new Graphics();
       c.beginFill(0xff0000);
       c.drawCircle(cx, cy, r);
       c.endFill();
       content.addChild(c);
+
+      // Health bar background
+      const barWidth = tileSize * 0.8;
+      const barHeight = tileSize * 0.1;
+      const barX = cx - barWidth / 2;
+      const barY = cy - r - barHeight - 2;
+      const bg = new Graphics();
+      bg.beginFill(0x555555);
+      bg.drawRect(barX, barY, barWidth, barHeight);
+      bg.endFill();
+      content.addChild(bg);
+
+      // Health bar fill
+      const fillRatio = Math.max(0, Math.min(w.health / 100, 1));
+      const fg = new Graphics();
+      const fillColor = w.health > 50
+        ? 0x00ff00
+        : w.health > 20
+        ? 0xffff00
+        : 0xff0000;
+      fg.beginFill(fillColor);
+      fg.drawRect(barX, barY, barWidth * fillRatio, barHeight);
+      fg.endFill();
+      content.addChild(fg);
+
+      // Name / ID text
+      const name = w.nick || `Player ${w.id}`;
+      const txt = new Text(name, {
+        fontFamily: 'Arial',
+        fontSize: tileSize * 0.15,
+        fill: 0xffffff,
+      });
+      txt.anchor.set(0.5, 1);
+      txt.x = cx;
+      txt.y = barY - 2;
+      content.addChild(txt);
     });
   }
 });
