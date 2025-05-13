@@ -1,7 +1,7 @@
 # W.O.R.M.S. WebSocket JSON Protocol
 
-All messages are JSON objects sent over a WebSocket.
-Each object **must** include a `"type"` field that selects one of the structures below.
+All messages are JSON objects sent over a WebSocket.  
+Each object **must** include a `"type"` field that selects one of the structures below.  
 Clients **must ignore** unknown keys so the protocol can evolve.
 
 ---
@@ -81,9 +81,9 @@ Sent **only** by the `player_id` that just received `TURN_BEGIN`.
 #### `action` variants
 
 | Variant         | Required keys                                                     | Notes                                                 |
-| --------------- | ----------------------------------------------------------------- | ------------------------------------------------------|
+| --------------- | ----------------------------------------------------------------- | ----------------------------------------------------- |
 | stand           | `{ "action": "stand" }`                                           |                                                       |
-| walk            | `{ "action": "walk", "dx": float }`                               | `dx` in world units (+ → right); \*\*max dx = 2\*\*   |
+| walk            | `{ "action": "walk", "dx": float }`                               | `dx` in world units (+ → right); **max dx = 2**       |
 | attack\:kick    | `{ "action": "attack", "weapon": "kick" }`                        | Flat 80 damage to the first living worm within 1 unit |
 | attack\:bazooka | `{ "action": "attack", "weapon": "bazooka", "angle_deg": float }` | 0° = right, CCW positive                              |
 | attack\:grenade | `{ "action": "attack", "weapon": "grenade", "dx": float }`        | Single `dx` (max dx = 5); horizontal distance only    |
@@ -94,18 +94,16 @@ Gravity is applied **instantly** only after a **walk** action: the worm falls in
 
 ### 1.5 TURN\_RESULT  (server → all)
 
-| Field        | Type       | Required | Description                       |
-| ------------ | ---------- | -------- | --------------------------------- |
-| `type`       | string     | ✓        | `"TURN_RESULT"`                   |
-| `turn_index` | integer    | ✓        | Same index as the triggering turn |
-| `player_id`  | integer    | ✓        | The acting player                 |
-| `state`      | Game State | ✓        | Resulting state                   |
-| `reward`     | number     | ✗        | Optional per-turn reward          |
-| `effects`    | object     | ✗        | Optional visual‐only data         |
-
-* `weapon` (string): `"bazooka"` or `"grenade"`
-* `trajectory` (array of `{ x: number, y: number }`): points along the shot
-* `impact` ({ x: number, y: number }): the final hit location
+| Field        | Type       | Required | Description                                    |
+| ------------ | ---------- | -------- | ---------------------------------------------- |
+| `type`       | string     | ✓        | `"TURN_RESULT"`                                |
+| `turn_index` | integer    | ✓        | Same index as the triggering turn              |
+| `player_id`  | integer    | ✓        | The acting player                              |
+| `state`      | Game State | ✓        | Resulting state                                |
+| `reward`     | number     | ✗        | Points earned this turn:                       |
+|              |            |          | • actual HP removed from any target(s)         |
+|              |            |          | • **+100** if the action killed a worm         |
+| `effects`    | object     | ✗        | Optional visual-only data (weapon, trajectory) |
 
 ---
 
@@ -166,7 +164,7 @@ Gravity is applied **instantly** only after a **walk** action: the worm falls in
 | Key     | Type          | Description                                                                                                        |
 | ------- | ------------- | ------------------------------------------------------------------------------------------------------------------ |
 | `worms` | array         | Each worm’s **`id`**, **`nick`**, **`health`**, and **position** in world units (`x`, `y` floats; 1 unit = 1 tile) |
-| `map`   | 2-D int array | `1` = solid terrain, `0` = empty air. Values below the last row (water) kill a worm instantly when fallen into.    |
+| `map`   | 2-D int array | `1` = solid terrain, `0` = empty air. Values below the last row kill a worm instantly when fallen into water.      |
 
 Clients **must ignore** any extra keys they do not understand.
 
@@ -174,11 +172,9 @@ Clients **must ignore** any extra keys they do not understand.
 
 ## 3  Rendering rule (client hint)
 
-To draw the map centred in the canvas:
-
-```
+```text
 tile = min(canvasW / cols, canvasH / rows)
 xMargin = (canvasW − tile*cols)/2
 yMargin = (canvasH − tile*rows)/2
-tile(i,j) at (xMargin + i*tile , yMargin + j*tile)
+draw tile(i,j) at (xMargin + i*tile , yMargin + j*tile)
 ```
