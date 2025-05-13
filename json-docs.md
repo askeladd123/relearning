@@ -1,4 +1,4 @@
-# W\.O.R.M.S. WebSocket JSON Protocol
+# W.O.R.M.S. WebSocket JSON Protocol
 
 All messages are JSON objects sent over a WebSocket.
 Each object **must** include a `"type"` field that selects one of the structures below.
@@ -80,13 +80,13 @@ Sent **only** by the `player_id` that just received `TURN_BEGIN`.
 
 #### `action` variants
 
-| Variant           | Required keys                                               | Notes                                                |
-| ----------------- | ----------------------------------------------------------- | ---------------------------------------------------- |
-| stand             | `{ "action": "stand" }`                                     | –                                                    |
-| walk              | `{ "action": "walk", "dx": float }`                         | `dx` in world units (+ → right)                      |
-| attack:kick       | `{ "action": "attack", "weapon": "kick" }`                  | Flat 80 damage to the first living worm within 1 unit |
-| attack:bazooka    | `{ "action": "attack", "weapon": "bazooka", "angle_deg": float }` | 0° = right, CCW positive                             |
-| attack:grenade    | `{ "action": "attack", "weapon": "grenade", "dx": float }`  | Single `dx` (max |dx| = 3); horizontal distance only |
+| Variant         | Required keys                                                     | Notes                                                 |
+| --------------- | ----------------------------------------------------------------- | ------------------------------------------------------|
+| stand           | `{ "action": "stand" }`                                           |                                                       |
+| walk            | `{ "action": "walk", "dx": float }`                               | `dx` in world units (+ → right); \*\*max dx = 2\*\*   |
+| attack\:kick    | `{ "action": "attack", "weapon": "kick" }`                        | Flat 80 damage to the first living worm within 1 unit |
+| attack\:bazooka | `{ "action": "attack", "weapon": "bazooka", "angle_deg": float }` | 0° = right, CCW positive                              |
+| attack\:grenade | `{ "action": "attack", "weapon": "grenade", "dx": float }`        | Single `dx` (max dx = 3); horizontal distance only    |
 
 Gravity is applied **instantly** only after a **walk** action: the worm falls in the same column until it lands on the first solid tile (`map[row][col] == 1`) or exits below the last row (water), which sets its `health` to `0`.
 
@@ -101,10 +101,11 @@ Gravity is applied **instantly** only after a **walk** action: the worm falls in
 | `player_id`  | integer    | ✓        | The acting player                 |
 | `state`      | Game State | ✓        | Resulting state                   |
 | `reward`     | number     | ✗        | Optional per-turn reward          |
-| `effects`    | object     | ✗        | Optional visual‐only data describing the projectile trajectory and impact:  |
-|              |            |          | • `weapon` (string): `"bazooka"` or `"grenade"`                             |
-|              |            |          | • `trajectory` (array of `{ x: number, y: number }`): points along the shot | 
-|              |            |          | • `impact` ({ x: number, y: number }): the final hit location               |
+| `effects`    | object     | ✗        | Optional visual‐only data         |
+
+* `weapon` (string): `"bazooka"` or `"grenade"`
+* `trajectory` (array of `{ x: number, y: number }`): points along the shot
+* `impact` ({ x: number, y: number }): the final hit location
 
 ---
 
@@ -123,8 +124,6 @@ Gravity is applied **instantly** only after a **walk** action: the worm falls in
 | ----------- | ------- | -------- | --------------------------- |
 | `type`      | string  | ✓        | `"PLAYER_ELIMINATED"`       |
 | `player_id` | integer | ✓        | ID of the eliminated player |
-
-Clients should disable inputs for that player upon receiving this.
 
 ---
 
