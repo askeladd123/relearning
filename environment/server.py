@@ -33,6 +33,7 @@ class WSState(IntEnum):
 class WormsServer:
     def __init__(self, expected_players: int) -> None:
         self.expected = expected_players
+        # initial core only used until first game start
         self.core = GameCore(expected_players=self.expected)
         self.clients: dict[Any, dict[str, Any]] = {}
         self.turn_order: list[Any] = []
@@ -86,10 +87,12 @@ class WormsServer:
             await self._safe_send(ws, msg)
 
     async def _play_single_game(self) -> None:
+        # --- ← new game start: force a fresh map & state each time
         self.core = GameCore(expected_players=self.expected)
         self.turn_counter = 0
         self.idx = 0
         self.game_id += 1
+
         initial = self.core.get_state_with_nicks(self.clients)
         await self._broadcast({
             "type": "NEW_GAME",
