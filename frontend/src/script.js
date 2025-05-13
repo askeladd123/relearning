@@ -58,7 +58,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     { action: 'walk', dx: 1.0 },
     { action: 'attack', weapon: 'kick', force: 70.0 },
     { action: 'attack', weapon: 'bazooka', angle_deg: 120.0 },
-    { action: 'attack', weapon: 'grenade', angle_deg: 15.0, force: 50.0 },
+    { action: 'attack', weapon: 'grenade', dx: 4.0 },   // ⇐ new signature
   ];
 
   const socket = new WebSocket('ws://127.0.0.1:8765');
