@@ -11,7 +11,6 @@ class GameCore:
     def __init__(self) -> None:
         self.state: Dict[str, Any] = self.initial_state()
 
-    # ──────────────────────────────────────────────────────────────────────
     def initial_state(self) -> Dict[str, Any]:
         return {
             "worms": [
@@ -26,20 +25,12 @@ class GameCore:
             ],
         }
 
-    def expected_players(self) -> int:  # unchanged
+    def expected_players(self) -> int:
         return 2
 
-    # ──────────────────────────────────────────────────────────────────────
     def step(
         self, player_id: int, action: Dict[str, Any]
     ) -> Tuple[Dict[str, Any], float, Dict[str, Any]]:
-        """
-        Advance the game by one action and return (new_state, reward, effects).
-
-        Only the **grenade** math differs from the original version:
-        it now takes a single `dx` world‑unit parameter and follows an
-        inverse‑V path whose peak height is |dx|/2.
-        """
         state = self.state
         worms = state["worms"]
         idx = player_id - 1
@@ -47,26 +38,23 @@ class GameCore:
 
         effects: Dict[str, Any] = {}
 
-        # ─── Movement ────────────────────────────────────────────────────
         if action.get("action") == "walk":
             dx = float(action.get("dx", 0.0))
             new_x = worm["x"] + dx
             worm["x"] = max(0.0, min(new_x, len(state["map"][0]) - 0.01))
 
-            # gravity (very simple: fall straight down until terrain)
             col = int(math.floor(worm["x"]))
             height = len(state["map"])
             for row in range(int(math.floor(worm["y"])) + 1, height):
                 if state["map"][row][col] == 1:
                     worm["y"] = float(row)
                     break
-            else:  # fell into water
+            else:
                 worm["y"] = float(height)
                 worm["health"] = 0
 
             return copy.deepcopy(state), 0.0, effects
 
-        # ─── Attack ──────────────────────────────────────────────────────
         if action.get("action") == "attack":
             damage_total = 0.0
             weapon = action.get("weapon")
@@ -74,7 +62,6 @@ class GameCore:
             effects["trajectory"] = []  # type: List[Dict[str, float]]
             effects["impact"] = {}
 
-            # — Kick (unchanged) —
             if weapon == "kick":
                 threshold = 1.0
                 force = float(action.get("force", 0.0))
@@ -87,7 +74,6 @@ class GameCore:
                         damage_total += force
                 effects = {}
 
-            # — Bazooka (unchanged) —
             elif weapon == "bazooka":
                 angle = math.radians(float(action.get("angle_deg", 0.0)))
                 dx = math.cos(angle)
@@ -121,36 +107,34 @@ class GameCore:
                             other["health"] = max(0.0, other["health"] - dmg)
                             damage_total += dmg
                             effects["impact"] = {"x": x_proj, "y": y_proj}
-                            t = max_range + 1  # stop outer loop
+                            t = max_range + 1
                             break
                     t += step_size
 
-            # — Grenade (new inverse‑V, takes only dx) —
             elif weapon == "grenade":
                 dx_total = float(action.get("dx", 0.0))
+                # cap distance to ±3 tiles
+                dx_total = max(-3.0, min(3.0, dx_total))
+
                 if dx_total == 0.0:
-                    # explode in place if someone sends dx=0
                     effects["impact"] = {"x": worm["x"], "y": worm["y"]}
                 else:
                     x0, y0 = worm["x"], worm["y"]
                     sign = 1.0 if dx_total > 0 else -1.0
                     width = abs(dx_total)
-                    height = width / 2.0  # agreed peak rule
+                    height = width / 2.0
 
                     step_size = 0.1
                     t = step_size
-                    while t <= width + 1e-6:  # include end point
-                        # horizontal progress 0…width
+                    while t <= width + 1e-6:
                         x_proj = x0 + sign * t
-                        u = t / width  # 0…1
-                        h_ratio = 1.0 - abs(1.0 - 2.0 * u)  # 0→1→0 triangular
-                        y_proj = y0 - height * h_ratio       # up = smaller y
+                        u = t / width
+                        h_ratio = 1.0 - abs(1.0 - 2.0 * u)
+                        y_proj = y0 - height * h_ratio
                         effects["trajectory"].append({"x": x_proj, "y": y_proj})
 
                         tile_x = int(math.floor(x_proj))
                         tile_y = int(math.floor(y_proj))
-
-                        # out of bounds or hits terrain
                         if (
                             tile_x < 0
                             or tile_x >= len(state["map"][0])
@@ -182,10 +166,8 @@ class GameCore:
 
             return copy.deepcopy(state), damage_total, effects
 
-        # ─── All other actions ────────────────────────────────────────────
         return copy.deepcopy(state), 0.0, effects
 
-    # ──────────────────────────────────────────────────────────────────────
     def get_state_with_nicks(self, clients: Dict[Any, Dict[str, Any]]) -> Dict[str, Any]:
         state_copy = copy.deepcopy(self.state)
         for ws, info in clients.items():
@@ -193,10 +175,3 @@ class GameCore:
             if 0 <= pid < len(state_copy["worms"]):
                 state_copy["worms"][pid]["nick"] = info.get("nick", f"Player {pid + 1}")
         return state_copy
-
-    def game_over(self) -> bool:
-        return False
-
-    def final_info(self) -> Dict[str, Any]:
-        return {"winner_id": 0, "final_state": self.state}
-
