@@ -136,7 +136,7 @@ class GameCore:
             elif weapon == "grenade":
                 dx_total = float(action.get("dx", 0.0))
                 sign = 1.0 if dx_total > 0 else -1.0
-                width = max(-3.0, min(dx_total, 3.0))
+                width = max(-5.0, min(dx_total, 5.0))
                 height = abs(width) / 2.0
                 x0, y0 = worm["x"], worm["y"]
                 step_size = 0.1
