@@ -1,3 +1,5 @@
+// File: frontend/src/script.js
+
 import { Application, Container, Graphics, Text } from 'pixi.js';
 
 let lastEnv = null;
@@ -5,11 +7,10 @@ let playerId = null;
 let currentPlayer = null;
 let myTurn = false;
 let eliminated = false;
+let activeEffects = [];
 
 document.addEventListener('DOMContentLoaded', async () => {
   const canvasHeight = 400;
-
-  // Create and initialize PIXI Application
   const app = new Application();
   await app.init({
     width: window.innerWidth,
@@ -67,23 +68,33 @@ document.addEventListener('DOMContentLoaded', async () => {
         playerId = msg.player_id;
         statusBar.textContent = `You are Player ${playerId}`;
         break;
+
       case 'TURN_BEGIN':
-        if (eliminated) break;
+        activeEffects = activeEffects
+          .map(e => ({ ...e, ttl: e.ttl - 1 }))
+          .filter(e => e.ttl > 0);
+
         currentPlayer = msg.player_id;
         myTurn = currentPlayer === playerId;
         lastEnv = msg.state;
         drawEnvironment(lastEnv);
         updateUI();
         break;
+
       case 'TURN_RESULT':
         lastEnv = msg.state;
+        if (msg.effects && msg.effects.weapon) {
+          activeEffects.push({ ...msg.effects, ttl: 2 });
+        }
         drawEnvironment(lastEnv);
         break;
+
       case 'TURN_END':
         currentPlayer = msg.next_player_id;
         myTurn = currentPlayer === playerId;
         updateUI();
         break;
+
       case 'PLAYER_ELIMINATED':
         if (msg.player_id === playerId) {
           eliminated = true;
@@ -96,11 +107,13 @@ document.addEventListener('DOMContentLoaded', async () => {
           overlay.style.visibility = 'visible';
         }
         break;
+
       case 'GAME_OVER':
         alert(`Game over! Winner: ${msg.winner_id}`);
         myTurn = false;
         updateUI();
         break;
+
       case 'ERROR':
         console.error(msg.msg);
         break;
@@ -170,7 +183,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   window.addEventListener('resize', () => {
-    // now safe: app.renderer has been initialized by init()
     app.renderer.resize(window.innerWidth, canvasHeight);
     if (lastEnv) drawEnvironment(lastEnv);
   });
@@ -239,6 +251,23 @@ document.addEventListener('DOMContentLoaded', async () => {
       txt.x = cx;
       txt.y = barY - 2;
       content.addChild(txt);
+    });
+
+    // draw effects
+    activeEffects.forEach(effect => {
+      effect.trajectory.forEach(p => {
+        const g = new Graphics();
+        g.beginFill(0xffff00);
+        g.drawCircle(xMargin + p.x * tileSize, yMargin + p.y * tileSize, tileSize * 0.1);
+        g.endFill();
+        content.addChild(g);
+      });
+      const imp = effect.impact;
+      const g2 = new Graphics();
+      g2.beginFill(effect.weapon === 'grenade' ? 0xff0000 : 0x0000ff);
+      g2.drawCircle(xMargin + imp.x * tileSize, yMargin + imp.y * tileSize, tileSize * 0.3);
+      g2.endFill();
+      content.addChild(g2);
     });
   }
 });

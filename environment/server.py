@@ -146,13 +146,14 @@ class WormsServer:
 
             # Apply and broadcast result
             action = msg.get("action", {})
-            new_state, reward = self.core.step(pid, action)
+            new_state, reward, effects = self.core.step(pid, action)
             await self.broadcast({
                 "type": "TURN_RESULT",
                 "turn_index": self.turn_counter,
                 "player_id": pid,
                 "state": new_state,
-                "reward": reward
+                "reward": reward,
+                "effects": effects,
             })
 
             # TURN_END

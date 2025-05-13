@@ -101,6 +101,10 @@ Gravity is applied **instantly** only after a **walk** action: the worm falls in
 | `player_id`  | integer    | ✓        | The acting player                 |
 | `state`      | Game State | ✓        | Resulting state                   |
 | `reward`     | number     | ✗        | Optional per-turn reward          |
+| `effects`    | object     | ✗        | Optional visual‐only data describing the projectile trajectory and impact:  |
+|              |            |          | • `weapon` (string): `"bazooka"` or `"grenade"`                             |
+|              |            |          | • `trajectory` (array of `{ x: number, y: number }`): points along the shot | 
+|              |            |          | • `impact` ({ x: number, y: number }): the final hit location               |
 
 ---
 
