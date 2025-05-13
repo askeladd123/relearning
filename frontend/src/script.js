@@ -1,6 +1,6 @@
 // File: frontend/src/script.js
 
-import { Application, Container, Graphics, Text } from 'pixi.js';
+import { Application, Container, Graphics, Text, Sprite, Texture, Assets } from 'pixi.js';
 
 let lastEnv = null;
 let playerId = null;
@@ -17,6 +17,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     height: canvasHeight,
     backgroundColor: 0x1099bb
   });
+
+  // ─── preload your PNG assets into the Pixi cache ───────────────────────────
+  await Assets.load(['dirt.png', 'worm.png', 'explosion.png']);
+  // now Texture.from('dirt.png') etc. will succeed without warnings
+
   document.getElementById('game-container').appendChild(app.view);
 
   const content = new Container();
@@ -198,31 +203,45 @@ document.addEventListener('DOMContentLoaded', async () => {
     const xMargin = (W - tileSize * cols) / 2;
     const yMargin = (H - tileSize * rows) / 2;
 
+    // map tiles
     map.forEach((row, y) => {
       row.forEach((cell, x) => {
-        const g = new Graphics();
-        g.beginFill(cell === 1 ? 0x000000 : 0x1099bb);
-        g.drawRect(xMargin + x * tileSize, yMargin + y * tileSize, tileSize, tileSize);
-        g.endFill();
-        content.addChild(g);
+        if (cell === 1) {
+          const tex = Texture.from('dirt.png');
+          const spr = new Sprite(tex);
+          spr.width = tileSize;
+          spr.height = tileSize;
+          spr.x = xMargin + x * tileSize;
+          spr.y = yMargin + y * tileSize;
+          content.addChild(spr);
+        } else {
+          const g = new Graphics();
+          g.beginFill(0x1099bb);
+          g.drawRect(xMargin + x * tileSize, yMargin + y * tileSize, tileSize, tileSize);
+          g.endFill();
+          content.addChild(g);
+        }
       });
     });
 
+    // worms
     worms.forEach((w) => {
       const cx = xMargin + w.x * tileSize;
       const cy = yMargin + w.y * tileSize;
-      const r = tileSize * 0.4;
+      const tex = Texture.from('worm.png');
+      const spr = new Sprite(tex);
+      spr.anchor.set(0.5, 0.5);
+      spr.width = tileSize;
+      spr.height = tileSize;
+      spr.x = cx;
+      spr.y = cy;
+      content.addChild(spr);
 
-      const c = new Graphics();
-      c.beginFill(0xff0000);
-      c.drawCircle(cx, cy, r);
-      c.endFill();
-      content.addChild(c);
-
+      // health bar, name, etc. (unchanged) …
       const barWidth = tileSize * 0.8;
       const barHeight = tileSize * 0.1;
       const barX = cx - barWidth / 2;
-      const barY = cy - r - barHeight - 2;
+      const barY = cy - tileSize / 2 - barHeight - 2;
       const bg = new Graphics();
       bg.beginFill(0x555555);
       bg.drawRect(barX, barY, barWidth, barHeight);
@@ -241,19 +260,18 @@ document.addEventListener('DOMContentLoaded', async () => {
       fg.endFill();
       content.addChild(fg);
 
-      const name = w.nick || `Player ${w.id}`;
-      const txt = new Text(name, {
+      const nameTxt = new Text(w.nick || `Player ${w.id}`, {
         fontFamily: 'Arial',
         fontSize: tileSize * 0.15,
         fill: 0xffffff,
       });
-      txt.anchor.set(0.5, 1);
-      txt.x = cx;
-      txt.y = barY - 2;
-      content.addChild(txt);
+      nameTxt.anchor.set(0.5, 1);
+      nameTxt.x = cx;
+      nameTxt.y = barY - 2;
+      content.addChild(nameTxt);
     });
 
-    // draw effects
+    // effects: simple dots for trajectory, explosion sprite for impact
     activeEffects.forEach(effect => {
       effect.trajectory.forEach(p => {
         const g = new Graphics();
@@ -263,11 +281,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         content.addChild(g);
       });
       const imp = effect.impact;
-      const g2 = new Graphics();
-      g2.beginFill(effect.weapon === 'grenade' ? 0xff0000 : 0x0000ff);
-      g2.drawCircle(xMargin + imp.x * tileSize, yMargin + imp.y * tileSize, tileSize * 0.3);
-      g2.endFill();
-      content.addChild(g2);
+      const tex = Texture.from('explosion.png');
+      const spr = new Sprite(tex);
+      spr.anchor.set(0.5, 0.5);
+      spr.width = tileSize;
+      spr.height = tileSize;
+      spr.x = xMargin + imp.x * tileSize;
+      spr.y = yMargin + imp.y * tileSize;
+      content.addChild(spr);
     });
   }
 });
