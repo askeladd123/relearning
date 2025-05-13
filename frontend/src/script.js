@@ -18,12 +18,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     backgroundColor: 0x1099bb
   });
 
-  // ─── preload your PNG assets into the Pixi cache ───────────────────────────
-  await Assets.load(['dirt.png', 'worm.png', 'explosion.png']);
-  // now Texture.from('dirt.png') etc. will succeed without warnings
+  await Assets.load(['dirt.png', 'worm.png', 'explosion.png', 'boot.png']);
 
   document.getElementById('game-container').appendChild(app.view);
-
   const content = new Container();
   app.stage.addChild(content);
 
@@ -56,9 +53,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   const ACTIONS = [
     { action: 'stand' },
     { action: 'walk', dx: 1.0 },
-    { action: 'attack', weapon: 'kick', force: 70.0 },
+    { action: 'attack', weapon: 'kick' },
     { action: 'attack', weapon: 'bazooka', angle_deg: 120.0 },
-    { action: 'attack', weapon: 'grenade', dx: 4.0 },   // ⇐ new signature
+    { action: 'attack', weapon: 'grenade', dx: 4.0 },
   ];
 
   const socket = new WebSocket('ws://127.0.0.1:8765');
@@ -203,12 +200,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     const xMargin = (W - tileSize * cols) / 2;
     const yMargin = (H - tileSize * rows) / 2;
 
-    // map tiles
     map.forEach((row, y) => {
       row.forEach((cell, x) => {
         if (cell === 1) {
-          const tex = Texture.from('dirt.png');
-          const spr = new Sprite(tex);
+          const spr = new Sprite(Texture.from('dirt.png'));
           spr.width = tileSize;
           spr.height = tileSize;
           spr.x = xMargin + x * tileSize;
@@ -224,12 +219,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       });
     });
 
-    // worms
     worms.forEach((w) => {
       const cx = xMargin + w.x * tileSize;
       const cy = yMargin + w.y * tileSize;
-      const tex = Texture.from('worm.png');
-      const spr = new Sprite(tex);
+      const spr = new Sprite(Texture.from('worm.png'));
       spr.anchor.set(0.5, 0.5);
       spr.width = tileSize;
       spr.height = tileSize;
@@ -237,7 +230,6 @@ document.addEventListener('DOMContentLoaded', async () => {
       spr.y = cy;
       content.addChild(spr);
 
-      // health bar, name, etc. (unchanged) …
       const barWidth = tileSize * 0.8;
       const barHeight = tileSize * 0.1;
       const barX = cx - barWidth / 2;
@@ -271,7 +263,6 @@ document.addEventListener('DOMContentLoaded', async () => {
       content.addChild(nameTxt);
     });
 
-    // effects: simple dots for trajectory, explosion sprite for impact
     activeEffects.forEach(effect => {
       effect.trajectory.forEach(p => {
         const g = new Graphics();
@@ -280,15 +271,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         g.endFill();
         content.addChild(g);
       });
-      const imp = effect.impact;
-      const tex = Texture.from('explosion.png');
-      const spr = new Sprite(tex);
-      spr.anchor.set(0.5, 0.5);
-      spr.width = tileSize;
-      spr.height = tileSize;
-      spr.x = xMargin + imp.x * tileSize;
-      spr.y = yMargin + imp.y * tileSize;
-      content.addChild(spr);
+      if (effect.impact) {
+        const spriteName = effect.weapon === 'kick' ? 'boot.png' : 'explosion.png';
+        const spr = new Sprite(Texture.from(spriteName));
+        spr.anchor.set(0.5, 0.5);
+        spr.width = tileSize;
+        spr.height = tileSize;
+        spr.x = xMargin + effect.impact.x * tileSize;
+        spr.y = yMargin + effect.impact.y * tileSize;
+        content.addChild(spr);
+      }
     });
   }
 });

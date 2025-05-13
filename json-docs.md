@@ -80,13 +80,13 @@ Sent **only** by the `player_id` that just received `TURN_BEGIN`.
 
 #### `action` variants
 
-| Variant           | Required keys                                                          | Notes                                   |
-| ----------------- | ---------------------------------------------------------------------- | --------------------------------------- |
-| stand             | `{ "action": "stand" }`                                                | –                                       |
-| walk              | `{ "action": "walk", "dx": float }`                                    | `dx` in world units (+ → right)         |
-| attack:kick       | `{ "action": "attack", "weapon": "kick", "force": 0‑100 }`             | –                                       |
-| attack:bazooka    | `{ "action": "attack", "weapon": "bazooka", "angle_deg": float }`      | 0° = right, CCW positive                |
-| attack:grenade    | `{ "action": "attack", "weapon": "grenade", "dx": float }`             | Single parameter: horizontal distance   |
+| Variant           | Required keys                                               | Notes                                                |
+| ----------------- | ----------------------------------------------------------- | ---------------------------------------------------- |
+| stand             | `{ "action": "stand" }`                                     | –                                                    |
+| walk              | `{ "action": "walk", "dx": float }`                         | `dx` in world units (+ → right)                      |
+| attack:kick       | `{ "action": "attack", "weapon": "kick" }`                  | Flat 80 damage to the first living worm within 1 unit |
+| attack:bazooka    | `{ "action": "attack", "weapon": "bazooka", "angle_deg": float }` | 0° = right, CCW positive                             |
+| attack:grenade    | `{ "action": "attack", "weapon": "grenade", "dx": float }`  | Single `dx` (max |dx| = 3); horizontal distance only |
 
 Gravity is applied **instantly** only after a **walk** action: the worm falls in the same column until it lands on the first solid tile (`map[row][col] == 1`) or exits below the last row (water), which sets its `health` to `0`.
 

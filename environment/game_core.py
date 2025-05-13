@@ -20,8 +20,8 @@ class GameCore:
             "map": [
                 [1, 0, 0, 0, 0, 0, 0, 0],
                 [1, 0, 0, 0, 0, 0, 0, 0],
-                [1, 1, 1, 0, 0, 0, 1, 0],
-                [1, 1, 1, 0, 0, 1, 1, 1],
+                [1, 1, 1, 1, 1, 1, 1, 0],
+                [1, 1, 1, 1, 1, 1, 1, 1],
             ],
         }
 
@@ -41,8 +41,10 @@ class GameCore:
         if action.get("action") == "walk":
             dx = float(action.get("dx", 0.0))
             new_x = worm["x"] + dx
+            # constrain within horizontal bounds
             worm["x"] = max(0.0, min(new_x, len(state["map"][0]) - 0.01))
 
+            # gravity drop: fall until terrain or water
             col = int(math.floor(worm["x"]))
             height = len(state["map"])
             for row in range(int(math.floor(worm["y"])) + 1, height):
@@ -50,29 +52,34 @@ class GameCore:
                     worm["y"] = float(row)
                     break
             else:
+                # fell into water
                 worm["y"] = float(height)
                 worm["health"] = 0
+
+            # collision-correction: if still inside solid, snap to its top
+            row_here = int(math.floor(worm["y"]))
+            if row_here < height and state["map"][row_here][col] == 1:
+                worm["y"] = float(row_here)
 
             return copy.deepcopy(state), 0.0, effects
 
         if action.get("action") == "attack":
             damage_total = 0.0
             weapon = action.get("weapon")
-            effects["weapon"] = weapon
-            effects["trajectory"] = []  # type: List[Dict[str, float]]
-            effects["impact"] = {}
+            effects = {"weapon": weapon, "trajectory": []}
 
             if weapon == "kick":
                 threshold = 1.0
-                force = float(action.get("force", 0.0))
+                damage = 80.0
                 for other in worms:
                     if other["id"] == worm["id"] or other["health"] <= 0:
                         continue
                     dist = math.hypot(other["x"] - worm["x"], other["y"] - worm["y"])
                     if dist <= threshold:
-                        other["health"] = max(0.0, other["health"] - force)
-                        damage_total += force
-                effects = {}
+                        other["health"] = max(0.0, other["health"] - damage)
+                        damage_total += damage
+                        effects["impact"] = {"x": other["x"], "y": other["y"]}
+                        break
 
             elif weapon == "bazooka":
                 angle = math.radians(float(action.get("angle_deg", 0.0)))
@@ -82,6 +89,7 @@ class GameCore:
                 step_size = 0.1
                 max_range = 10.0
                 t = step_size
+                effects["impact"] = {}
                 while t <= max_range:
                     x_proj = x0 + dx * t
                     y_proj = y0 + dy * t
@@ -113,7 +121,6 @@ class GameCore:
 
             elif weapon == "grenade":
                 dx_total = float(action.get("dx", 0.0))
-                # cap distance to ±3 tiles
                 dx_total = max(-3.0, min(3.0, dx_total))
 
                 if dx_total == 0.0:
@@ -126,6 +133,7 @@ class GameCore:
 
                     step_size = 0.1
                     t = step_size
+                    effects["impact"] = {}
                     while t <= width + 1e-6:
                         x_proj = x0 + sign * t
                         u = t / width

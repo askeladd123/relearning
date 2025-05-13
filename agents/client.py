@@ -35,8 +35,8 @@ ACTIONS = [
     {"action": "stand"},
     {"action": "walk", "dx": 1.0},
     {"action": "attack", "weapon": "kick", "force": 70.0},
-    {"action": "attack", "weapon": "bazooka", "angle_deg": 90.0},
-    {"action": "attack", "weapon": "grenade", "dx": 4.0},  # ⇐ new signature
+    {"action": "attack", "weapon": "bazooka", "angle_deg": 30.0},
+    {"action": "attack", "weapon": "grenade", "dx": 2.0},  # ⇐ new signature
 ]
 
 async def start_client() -> None:
