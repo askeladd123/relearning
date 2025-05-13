@@ -8,6 +8,7 @@ let currentPlayer = null;
 let myTurn = false;
 let eliminated = false;
 let activeEffects = [];
+let cumulativeReward = 0;   // track total reward this game
 
 document.addEventListener('DOMContentLoaded', async () => {
   const canvasHeight = 400;
@@ -68,7 +69,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     switch (msg.type) {
       case 'ASSIGN_ID':
         playerId = msg.player_id;
-        statusBar.textContent = `You are Player ${playerId}`;
+        statusBar.textContent = `You are Player ${playerId} | Reward: 0`;
+        break;
+
+      case 'NEW_GAME':
+        cumulativeReward = 0;
+        eliminated = false;
+        statusBar.textContent = myTurn
+          ? `Your turn (Player ${playerId}) | Reward: ${cumulativeReward}`
+          : `Waiting for Player ${currentPlayer || '?'} | Reward: ${cumulativeReward}`;
         break;
 
       case 'TURN_BEGIN':
@@ -88,7 +97,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (msg.effects && msg.effects.weapon) {
           activeEffects.push({ ...msg.effects, ttl: 2 });
         }
+        if (msg.player_id === playerId) {
+          cumulativeReward += Math.floor(msg.reward);
+        }
         drawEnvironment(lastEnv);
+        updateUI();
         break;
 
       case 'TURN_END':
@@ -101,7 +114,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (msg.player_id === playerId) {
           eliminated = true;
           myTurn = false;
-          statusBar.textContent = 'You have been eliminated';
+          statusBar.textContent = `You have been eliminated | Reward: ${cumulativeReward}`;
           sendBtn.disabled = true;
           actionSelect.disabled = true;
           actionParams.querySelectorAll('input').forEach(i => i.disabled = true);
@@ -159,10 +172,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   buildParams();
 
   function updateUI() {
-    if (playerId != null && !eliminated) {
-      statusBar.textContent = myTurn
-        ? `Your turn (Player ${playerId})`
-        : `Waiting for Player ${currentPlayer}`;
+    if (playerId != null) {
+      let statusText;
+      if (eliminated) {
+        statusText = `You have been eliminated`;
+      } else if (myTurn) {
+        statusText = `Your turn (Player ${playerId})`;
+      } else {
+        statusText = `Waiting for Player ${currentPlayer}`;
+      }
+      statusBar.textContent = `${statusText} | Reward: ${cumulativeReward}`;
       sendBtn.disabled = !myTurn;
       actionSelect.disabled = !myTurn;
       actionParams.querySelectorAll('input').forEach(i => i.disabled = !myTurn);
