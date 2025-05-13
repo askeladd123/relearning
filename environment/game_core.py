@@ -35,7 +35,7 @@ class GameCore:
         worms = []
         for pid, (r, c) in enumerate(chosen):
             x = c + 0.5
-            y = float(r) - 0.25
+            y = float(r) - 0.25    # spawn a quarter-tile above
             worms.append({"id": pid, "health": 100, "x": x, "y": y})
 
         return {"worms": worms, "map": copy.deepcopy(self.map)}
@@ -56,16 +56,23 @@ class GameCore:
 
             col = int(math.floor(worm["x"]))
             height = len(self.map)
+            OFFSET = 0.25
 
-            # find first solid tile below and float half a tile above it
-            for row in range(int(math.floor(worm["y"])) + 1, height):
-                if self.map[row][col] == 1:
-                    worm["y"] = float(row) - 0.5
-                    break
+            # if you’ve moved into the side of a solid tile at your current row, climb on top
+            row_here = int(math.floor(worm["y"]))
+            if 0 <= row_here < height and self.map[row_here][col] == 1:
+                worm["y"] = float(row_here) - OFFSET
+
             else:
-                # fell into water
-                worm["y"] = float(height)
-                worm["health"] = 0
+                # otherwise, normal gravity drop to first solid below
+                for row in range(row_here + 1, height):
+                    if self.map[row][col] == 1:
+                        worm["y"] = float(row) - OFFSET
+                        break
+                else:
+                    # fell into water
+                    worm["y"] = float(height)
+                    worm["health"] = 0
 
             return copy.deepcopy(state), 0.0, effects
 
