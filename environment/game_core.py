@@ -2,31 +2,43 @@
 import copy
 import logging
 import math
-from typing import Any, Dict, Tuple, List
+import random
+from typing import Any, Dict, Tuple
 
 logger = logging.getLogger(__name__)
 
-
 class GameCore:
-    def __init__(self) -> None:
+    def __init__(self, expected_players: int = 2) -> None:
+        self.expected = expected_players
+        self.map = [
+            [1, 0, 0, 0, 0, 0, 0, 0],
+            [1, 0, 0, 0, 0, 0, 0, 0],
+            [1, 1, 1, 1, 1, 1, 1, 0],
+            [1, 1, 1, 1, 1, 1, 1, 1],
+        ]
         self.state: Dict[str, Any] = self.initial_state()
 
-    def initial_state(self) -> Dict[str, Any]:
-        return {
-            "worms": [
-                {"id": 0, "health": 100, "x": 3.20, "y": 1.75},
-                {"id": 1, "health": 100, "x": 6.00, "y": 2.00},
-            ],
-            "map": [
-                [1, 0, 0, 0, 0, 0, 0, 0],
-                [1, 0, 0, 0, 0, 0, 0, 0],
-                [1, 1, 1, 1, 1, 1, 1, 0],
-                [1, 1, 1, 1, 1, 1, 1, 1],
-            ],
-        }
-
     def expected_players(self) -> int:
-        return 2
+        return self.expected
+
+    def initial_state(self) -> Dict[str, Any]:
+        floor = []
+        for r in range(1, len(self.map)):
+            for c in range(len(self.map[0])):
+                if self.map[r][c] == 1 and self.map[r - 1][c] == 0:
+                    floor.append((r, c))
+
+        if len(floor) < self.expected:
+            raise ValueError(f"Not enough floor tiles ({len(floor)}) for {self.expected} players")
+
+        chosen = random.sample(floor, self.expected)
+        worms = []
+        for pid, (r, c) in enumerate(chosen):
+            x = c + 0.5
+            y = float(r) - 0.25
+            worms.append({"id": pid, "health": 100, "x": x, "y": y})
+
+        return {"worms": worms, "map": copy.deepcopy(self.map)}
 
     def step(
         self, player_id: int, action: Dict[str, Any]
@@ -35,31 +47,25 @@ class GameCore:
         worms = state["worms"]
         idx = player_id - 1
         worm = worms[idx]
-
         effects: Dict[str, Any] = {}
 
         if action.get("action") == "walk":
             dx = float(action.get("dx", 0.0))
             new_x = worm["x"] + dx
-            # constrain within horizontal bounds
-            worm["x"] = max(0.0, min(new_x, len(state["map"][0]) - 0.01))
+            worm["x"] = max(0.0, min(new_x, len(self.map[0]) - 0.01))
 
-            # gravity drop: fall until terrain or water
             col = int(math.floor(worm["x"]))
-            height = len(state["map"])
+            height = len(self.map)
+
+            # find first solid tile below and float half a tile above it
             for row in range(int(math.floor(worm["y"])) + 1, height):
-                if state["map"][row][col] == 1:
-                    worm["y"] = float(row)
+                if self.map[row][col] == 1:
+                    worm["y"] = float(row) - 0.5
                     break
             else:
                 # fell into water
                 worm["y"] = float(height)
                 worm["health"] = 0
-
-            # collision-correction: if still inside solid, snap to its top
-            row_here = int(math.floor(worm["y"]))
-            if row_here < height and state["map"][row_here][col] == 1:
-                worm["y"] = float(row_here)
 
             return copy.deepcopy(state), 0.0, effects
 
@@ -94,19 +100,16 @@ class GameCore:
                     x_proj = x0 + dx * t
                     y_proj = y0 + dy * t
                     effects["trajectory"].append({"x": x_proj, "y": y_proj})
-
-                    tile_x = int(math.floor(x_proj))
-                    tile_y = int(math.floor(y_proj))
+                    tx, ty = int(math.floor(x_proj)), int(math.floor(y_proj))
                     if (
-                        tile_x < 0
-                        or tile_x >= len(state["map"][0])
-                        or tile_y < 0
-                        or tile_y >= len(state["map"])
-                        or state["map"][tile_y][tile_x] == 1
+                        tx < 0
+                        or tx >= len(self.map[0])
+                        or ty < 0
+                        or ty >= len(self.map)
+                        or self.map[ty][tx] == 1
                     ):
                         effects["impact"] = {"x": x_proj, "y": y_proj}
                         break
-
                     for other in worms:
                         if other["id"] == worm["id"] or other["health"] <= 0:
                             continue
@@ -122,7 +125,6 @@ class GameCore:
             elif weapon == "grenade":
                 dx_total = float(action.get("dx", 0.0))
                 dx_total = max(-3.0, min(3.0, dx_total))
-
                 if dx_total == 0.0:
                     effects["impact"] = {"x": worm["x"], "y": worm["y"]}
                 else:
@@ -130,7 +132,6 @@ class GameCore:
                     sign = 1.0 if dx_total > 0 else -1.0
                     width = abs(dx_total)
                     height = width / 2.0
-
                     step_size = 0.1
                     t = step_size
                     effects["impact"] = {}
@@ -140,19 +141,16 @@ class GameCore:
                         h_ratio = 1.0 - abs(1.0 - 2.0 * u)
                         y_proj = y0 - height * h_ratio
                         effects["trajectory"].append({"x": x_proj, "y": y_proj})
-
-                        tile_x = int(math.floor(x_proj))
-                        tile_y = int(math.floor(y_proj))
+                        tx, ty = int(math.floor(x_proj)), int(math.floor(y_proj))
                         if (
-                            tile_x < 0
-                            or tile_x >= len(state["map"][0])
-                            or tile_y < 0
-                            or tile_y >= len(state["map"])
-                            or state["map"][tile_y][tile_x] == 1
+                            tx < 0
+                            or tx >= len(self.map[0])
+                            or ty < 0
+                            or ty >= len(self.map)
+                            or self.map[ty][tx] == 1
                         ):
                             effects["impact"] = {"x": x_proj, "y": y_proj}
                             break
-
                         hit = False
                         for other in worms:
                             if other["id"] == worm["id"] or other["health"] <= 0:

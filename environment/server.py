@@ -1,8 +1,8 @@
+# File: environment/server.py
 #!/usr/bin/env python3
 """
 Continuous W.O.R.M.S. match server.
-Keeps the same WebSocket connections alive across *many* games so that RL
-clients can train without reconnecting.
+Keeps the same WebSocket connections alive across many games so that RL clients can train without reconnecting.
 """
 from __future__ import annotations
 
@@ -18,27 +18,9 @@ from typing import Any, Dict
 import websockets
 from websockets.exceptions import ConnectionClosed
 
-# ─── CLI / logging ──────────────────────────────────────────────────────────
-def setup_logging() -> logging.Logger:
-    parser = argparse.ArgumentParser(description="W.O.R.M.S. continuous server")
-    parser.add_argument("--log-level",
-                        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-                        default="INFO",
-                        help="set logging level")
-    args = parser.parse_args()
-    level = getattr(logging, args.log_level)
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-    )
-    return logging.getLogger("server")
-
-logger = setup_logging()
-
-# Add ./environment to import path for game_core.py
+# ensure game_core is importable
 sys.path.append(str(Path(__file__).resolve().parent))
-from game_core import GameCore  # noqa: E402  pylint: disable=wrong-import-position
+from game_core import GameCore
 
 HOST, PORT = "127.0.0.1", 8765
 
@@ -48,22 +30,17 @@ class WSState(IntEnum):
     CLOSING = 2
     CLOSED = 3
 
-
 class WormsServer:
-    """Accepts WebSockets and runs an infinite series of games."""
-
-    # ––––– Connection handling ––––––––––––––––––––––––––––––––––––––––––––
-
-    def __init__(self) -> None:
-        self.core = GameCore()
+    def __init__(self, expected_players: int) -> None:
+        self.expected = expected_players
+        self.core = GameCore(expected_players=self.expected)
         self.clients: dict[Any, dict[str, Any]] = {}
         self.turn_order: list[Any] = []
         self.idx = 0
         self.turn_counter = 0
-        self.game_id = 0  # increments every time we start a fresh episode
+        self.game_id = 0
 
     async def accept(self, ws: Any) -> None:
-        """Handle the initial CONNECT handshake, then just keep the socket alive."""
         try:
             raw = await asyncio.wait_for(ws.recv(), timeout=10)
             msg = json.loads(raw)
@@ -80,7 +57,6 @@ class WormsServer:
         self.clients[ws] = {"id": pid, "nick": nick}
         self.turn_order.append(ws)
         await ws.send(json.dumps({"type": "ASSIGN_ID", "player_id": pid}))
-        logger.info("new connection: player %d (%s)", pid, nick)
 
         try:
             await ws.wait_closed()
@@ -88,7 +64,6 @@ class WormsServer:
             self._remove(ws)
 
     def _remove(self, ws: Any) -> None:
-        """Forget a disconnected socket and fix the turn index."""
         if ws in self.turn_order:
             idx = self.turn_order.index(ws)
             self.turn_order.remove(ws)
@@ -110,26 +85,19 @@ class WormsServer:
         for ws in list(self.clients):
             await self._safe_send(ws, msg)
 
-    # ––––– Game orchestration ––––––––––––––––––––––––––––––––––––––––––––––
-
     async def _play_single_game(self) -> None:
-        """Run one episode until someone wins or all but one disconnect."""
-        # fresh state ↓↓↓
-        self.core = GameCore()
+        self.core = GameCore(expected_players=self.expected)
         self.turn_counter = 0
         self.idx = 0
         self.game_id += 1
-        initial_state = self.core.get_state_with_nicks(self.clients)
-
-        # Tell everyone a new game is starting
+        initial = self.core.get_state_with_nicks(self.clients)
         await self._broadcast({
             "type": "NEW_GAME",
             "game_id": self.game_id,
-            "state": initial_state,
+            "state": initial,
         })
 
         while True:
-            # End if ≤1 living worms
             alive = [w for w in self.core.state["worms"] if w["health"] > 0]
             if len(alive) <= 1:
                 winner = alive[0]["id"] + 1 if alive else None
@@ -139,13 +107,11 @@ class WormsServer:
                     "winner_id": winner,
                     "final_state": self.core.state,
                 })
-                return  # ►► back to outer loop to maybe start another episode
+                return
 
-            # No players at all? stop the loop and wait for newcomers
             if not self.turn_order:
                 return
 
-            # Ensure idx is valid
             if self.idx >= len(self.turn_order):
                 self.idx = 0
 
@@ -157,7 +123,6 @@ class WormsServer:
             pid = self.clients[ws]["id"]
             worm = self.core.state["worms"][pid - 1]
 
-            # Skip dead worms
             if worm["health"] <= 0:
                 await self._broadcast({
                     "type": "PLAYER_ELIMINATED",
@@ -166,7 +131,6 @@ class WormsServer:
                 self.turn_order.pop(self.idx)
                 continue
 
-            # TURN_BEGIN
             begin = {
                 "type": "TURN_BEGIN",
                 "turn_index": self.turn_counter,
@@ -177,7 +141,6 @@ class WormsServer:
             if not await self._safe_send(ws, begin):
                 continue
 
-            # Wait for ACTION
             try:
                 raw = await asyncio.wait_for(ws.recv(), timeout=15)
                 msg = json.loads(raw)
@@ -202,31 +165,47 @@ class WormsServer:
                 "effects": effects,
             })
 
-            # TURN_END
             next_idx = (self.idx + 1) % len(self.turn_order)
             next_pid = self.clients[self.turn_order[next_idx]]["id"]
             await self._broadcast({"type": "TURN_END", "next_player_id": next_pid})
 
-            # Advance
             self.idx += 1
             self.turn_counter += 1
 
     async def orchestrator(self) -> None:
-        """Forever wait for enough players, then run one game after another."""
         while True:
-            # Wait until we have the required number of players
-            while len(self.clients) < self.core.expected_players():
+            while len(self.clients) < self.expected:
                 await asyncio.sleep(0.1)
             await self._play_single_game()
-            # Loop immediately: either players left → new game, or we go back to waiting
 
-# ─── main entry point ───────────────────────────────────────────────────────
 async def main() -> None:
-    server = WormsServer()
+    parser = argparse.ArgumentParser(description="W.O.R.M.S. continuous server")
+    parser.add_argument(
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        default="INFO",
+        help="set logging level",
+    )
+    parser.add_argument(
+        "--max-players",
+        type=int,
+        default=2,
+        help="number of worms per game",
+    )
+    args = parser.parse_args()
 
+    logging.basicConfig(
+        level=getattr(logging, args.log_level),
+        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    global logger
+    logger = logging.getLogger("server")
+
+    server = WormsServer(expected_players=args.max_players)
     async with websockets.serve(server.accept, HOST, PORT):
         asyncio.create_task(server.orchestrator())
-        await asyncio.Future()  # run forever
+        await asyncio.Future()
 
 if __name__ == "__main__":
     asyncio.run(main())
