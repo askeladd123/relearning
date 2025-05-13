@@ -11,13 +11,14 @@ import random
 
 import websockets
 
-# ─── CLI / logging ──────────────────────────────────────────────────────────
 def setup_logging() -> logging.Logger:
     parser = argparse.ArgumentParser(description="W.O.R.M.S. bot client")
-    parser.add_argument("--log-level",
-                        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-                        default="INFO",
-                        help="set logging level")
+    parser.add_argument(
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        default="INFO",
+        help="set logging level",
+    )
     args = parser.parse_args()
     level = getattr(logging, args.log_level)
     logging.basicConfig(
@@ -36,7 +37,7 @@ ACTIONS = [
     {"action": "walk", "dx": 1.0},
     {"action": "attack", "weapon": "kick"},
     {"action": "attack", "weapon": "bazooka", "angle_deg": 30.0},
-    {"action": "attack", "weapon": "grenade", "dx": 2.0},  # ⇐ new signature
+    {"action": "attack", "weapon": "grenade", "dx": 2.0},
 ]
 
 async def start_client() -> None:
@@ -64,13 +65,15 @@ async def start_client() -> None:
                 eliminated = False
                 logger.info("new episode %s started – back in the game!", msg.get("game_id"))
 
-            elif (t == "TURN_BEGIN"
-                  and msg.get("player_id") == player_id
-                  and not eliminated):
+            elif t == "TURN_BEGIN" and msg.get("player_id") == player_id and not eliminated:
                 action = random.choice(ACTIONS)
                 payload = {"type": "ACTION", "player_id": player_id, "action": action}
                 await ws.send(json.dumps(payload))
                 logger.debug("did action: %r", payload)
+
+            elif t == "TURN_RESULT" and msg.get("player_id") == player_id:
+                reward = msg.get("reward", 0.0)
+                logger.info("received reward=%.1f", reward)
 
 if __name__ == "__main__":
     asyncio.run(start_client())

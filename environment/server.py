@@ -1,4 +1,3 @@
-# File: environment/server.py
 #!/usr/bin/env python3
 """
 Continuous W.O.R.M.S. match server.
@@ -10,6 +9,7 @@ import argparse
 import asyncio
 import json
 import logging
+import random          # NEW
 import sys
 from enum import IntEnum
 from pathlib import Path
@@ -18,11 +18,14 @@ from typing import Any, Dict
 import websockets
 from websockets.exceptions import ConnectionClosed
 
+TIME_LIMIT_MS = 15000
+
 # ensure game_core is importable
 sys.path.append(str(Path(__file__).resolve().parent))
 from game_core import GameCore
 
 HOST, PORT = "127.0.0.1", 8765
+
 
 class WSState(IntEnum):
     CONNECTING = 0
@@ -30,10 +33,10 @@ class WSState(IntEnum):
     CLOSING = 2
     CLOSED = 3
 
+
 class WormsServer:
     def __init__(self, expected_players: int) -> None:
         self.expected = expected_players
-        # initial core only used until first game start
         self.core = GameCore(expected_players=self.expected)
         self.clients: dict[Any, dict[str, Any]] = {}
         self.turn_order: list[Any] = []
@@ -87,29 +90,37 @@ class WormsServer:
             await self._safe_send(ws, msg)
 
     async def _play_single_game(self) -> None:
-        # --- ← new game start: force a fresh map & state each time
+        # ── NEW: fresh round‑robin list for the new game ────────────────────
+        self.turn_order = [ws for ws in self.clients if ws.state == WSState.OPEN]
+        random.shuffle(self.turn_order)  # vary who starts
+        # ────────────────────────────────────────────────────────────────────
+
         self.core = GameCore(expected_players=self.expected)
         self.turn_counter = 0
         self.idx = 0
         self.game_id += 1
 
         initial = self.core.get_state_with_nicks(self.clients)
-        await self._broadcast({
-            "type": "NEW_GAME",
-            "game_id": self.game_id,
-            "state": initial,
-        })
+        await self._broadcast(
+            {
+                "type": "NEW_GAME",
+                "game_id": self.game_id,
+                "state": initial,
+            }
+        )
 
         while True:
             alive = [w for w in self.core.state["worms"] if w["health"] > 0]
             if len(alive) <= 1:
                 winner = alive[0]["id"] + 1 if alive else None
-                await self._broadcast({
-                    "type": "GAME_OVER",
-                    "game_id": self.game_id,
-                    "winner_id": winner,
-                    "final_state": self.core.state,
-                })
+                await self._broadcast(
+                    {
+                        "type": "GAME_OVER",
+                        "game_id": self.game_id,
+                        "winner_id": winner,
+                        "final_state": self.core.state,
+                    }
+                )
                 return
 
             if not self.turn_order:
@@ -127,10 +138,7 @@ class WormsServer:
             worm = self.core.state["worms"][pid - 1]
 
             if worm["health"] <= 0:
-                await self._broadcast({
-                    "type": "PLAYER_ELIMINATED",
-                    "player_id": pid,
-                })
+                await self._broadcast({"type": "PLAYER_ELIMINATED", "player_id": pid})
                 self.turn_order.pop(self.idx)
                 continue
 
@@ -139,7 +147,7 @@ class WormsServer:
                 "turn_index": self.turn_counter,
                 "player_id": pid,
                 "state": self.core.get_state_with_nicks(self.clients),
-                "time_limit_ms": 15000,
+                "time_limit_ms": TIME_LIMIT_MS,
             }
             if not await self._safe_send(ws, begin):
                 continue
@@ -159,14 +167,16 @@ class WormsServer:
 
             action = msg.get("action", {})
             new_state, reward, effects = self.core.step(pid, action)
-            await self._broadcast({
-                "type": "TURN_RESULT",
-                "turn_index": self.turn_counter,
-                "player_id": pid,
-                "state": new_state,
-                "reward": reward,
-                "effects": effects,
-            })
+            await self._broadcast(
+                {
+                    "type": "TURN_RESULT",
+                    "turn_index": self.turn_counter,
+                    "player_id": pid,
+                    "state": new_state,
+                    "reward": reward,
+                    "effects": effects,
+                }
+            )
 
             next_idx = (self.idx + 1) % len(self.turn_order)
             next_pid = self.clients[self.turn_order[next_idx]]["id"]
@@ -181,6 +191,7 @@ class WormsServer:
                 await asyncio.sleep(0.1)
             await self._play_single_game()
 
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description="W.O.R.M.S. continuous server")
     parser.add_argument(
@@ -190,10 +201,7 @@ async def main() -> None:
         help="set logging level",
     )
     parser.add_argument(
-        "--max-players",
-        type=int,
-        default=2,
-        help="number of worms per game",
+        "--max-players", type=int, default=2, help="number of worms per game"
     )
     args = parser.parse_args()
 
@@ -209,6 +217,7 @@ async def main() -> None:
     async with websockets.serve(server.accept, HOST, PORT):
         asyncio.create_task(server.orchestrator())
         await asyncio.Future()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
