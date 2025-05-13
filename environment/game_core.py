@@ -62,7 +62,24 @@ class GameCore:
         effects: Dict[str, Any] = {}
 
         if action.get("action") == "walk":
-            # … unchanged …
+            dx = float(action.get("dx", 0.0))
+            dx = max(-2.0, min(dx, 2.0))
+            new_x = worm["x"] + dx
+            worm["x"] = max(0.0, min(new_x, len(self.map[0]) - 0.01))
+            col = int(math.floor(worm["x"]))
+            height = len(self.map)
+            OFFSET = 0.25
+            row_here = int(math.floor(worm["y"]))
+            if 0 <= row_here < height and self.map[row_here][col] == 1:
+                worm["y"] = float(row_here) - OFFSET
+            else:
+                for row in range(row_here + 1, height):
+                    if self.map[row][col] == 1:
+                        worm["y"] = float(row) - OFFSET
+                        break
+                else:
+                    worm["y"] = float(height)
+                    worm["health"] = 0
             return copy.deepcopy(state), 0.0, effects
 
         if action.get("action") == "attack":
@@ -71,11 +88,50 @@ class GameCore:
             effects = {"weapon": weapon, "trajectory": []}
 
             if weapon == "kick":
-                # … unchanged …
+                threshold, damage = 1.0, 80.0
+                for other in worms:
+                    if other["id"] == worm["id"] or other["health"] <= 0:
+                        continue
+                    dist = math.hypot(other["x"] - worm["x"], other["y"] - worm["y"])
+                    if dist <= threshold:
+                        other["health"] = max(0.0, other["health"] - damage)
+                        damage_total += damage
+                        effects["impact"] = {"x": other["x"], "y": other["y"]}
+                        break
                 return copy.deepcopy(state), damage_total, effects
 
             elif weapon == "bazooka":
-                # … unchanged …
+                angle = math.radians(float(action.get("angle_deg", 0.0)))
+                dx_unit, dy_unit = math.cos(angle), -math.sin(angle)
+                x0, y0 = worm["x"], worm["y"]
+                step, max_range = 0.1, 10.0
+                t = step
+                effects["impact"] = {}
+                while t <= max_range:
+                    x_proj = x0 + dx_unit * t
+                    y_proj = y0 + dy_unit * t
+                    effects["trajectory"].append({"x": x_proj, "y": y_proj})
+                    tx, ty = int(math.floor(x_proj)), int(math.floor(y_proj))
+                    if (
+                        tx < 0
+                        or tx >= len(self.map[0])
+                        or ty < 0
+                        or ty >= len(self.map)
+                        or self.map[ty][tx] == 1
+                    ):
+                        effects["impact"] = {"x": x_proj, "y": y_proj}
+                        break
+                    for other in worms:
+                        if other["id"] == worm["id"] or other["health"] <= 0:
+                            continue
+                        if math.hypot(other["x"] - x_proj, other["y"] - y_proj) <= 0.5:
+                            dmg = 50.0
+                            other["health"] = max(0.0, other["health"] - dmg)
+                            damage_total += dmg
+                            effects["impact"] = {"x": x_proj, "y": y_proj}
+                            t = max_range + 1
+                            break
+                    t += step
                 return copy.deepcopy(state), damage_total, effects
 
             elif weapon == "grenade":
@@ -88,19 +144,14 @@ class GameCore:
                 t = step_size
                 effects["impact"] = {}
 
-                # Continue until we hit terrain or a worm
                 while True:
-                    # XY projection
                     x_proj = x0 + sign * t
                     u = (t / abs(width)) if width != 0 else 0.0
-                    # inverse-V height profile
-                    h_ratio = 1.0 - abs(1.0 - 2.0 * u)
-                    y_proj = y0 - height * h_ratio
+                    y_proj = y0 - 4 * height * u * (1 - u)
 
                     effects["trajectory"].append({"x": x_proj, "y": y_proj})
                     tx, ty = int(math.floor(x_proj)), int(math.floor(y_proj))
 
-                    # terrain or out-of-bounds collision
                     if (
                         tx < 0
                         or tx >= len(self.map[0])
@@ -111,7 +162,6 @@ class GameCore:
                         effects["impact"] = {"x": x_proj, "y": y_proj}
                         break
 
-                    # worm collision
                     hit = False
                     for other in worms:
                         if other["id"] == worm["id"] or other["health"] <= 0:
@@ -132,8 +182,7 @@ class GameCore:
 
             else:
                 logger.warning("Unknown weapon: %s", weapon)
-                effects = {}
-                return copy.deepcopy(state), 0.0, effects
+                return copy.deepcopy(state), 0.0, {}
 
         return copy.deepcopy(state), 0.0, effects
 
