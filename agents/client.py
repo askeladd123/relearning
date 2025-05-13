@@ -34,7 +34,7 @@ HOST, PORT = "127.0.0.1", 8765
 ACTIONS = [
     {"action": "stand"},
     {"action": "walk", "dx": 1.0},
-    {"action": "attack", "weapon": "kick", "force": 70.0},
+    {"action": "attack", "weapon": "kick"},
     {"action": "attack", "weapon": "bazooka", "angle_deg": 30.0},
     {"action": "attack", "weapon": "grenade", "dx": 2.0},  # ⇐ new signature
 ]

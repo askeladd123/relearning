@@ -51,6 +51,9 @@ class GameCore:
 
         if action.get("action") == "walk":
             dx = float(action.get("dx", 0.0))
+            # cap walking distance to ±2 tiles
+            dx = max(-2.0, min(dx, 2.0))
+
             new_x = worm["x"] + dx
             worm["x"] = max(0.0, min(new_x, len(self.map[0]) - 0.01))
 
