@@ -1,4 +1,5 @@
 # File: environment/game_core.py
+
 import copy
 import json
 import logging
@@ -100,21 +101,29 @@ class GameCore:
 
         if action.get("action") == "attack":
             damage_total = 0.0
+            kill_bonus = 0.0
             weapon = action.get("weapon")
             effects = {"weapon": weapon, "trajectory": []}
 
+            # ─── Kick ──────────────────────────────────────────────────────────
             if weapon == "kick":
                 for other in worms:
                     if other["id"] == worm["id"] or other["health"] <= 0:
                         continue
                     dist = math.hypot(other["x"] - worm["x"], other["y"] - worm["y"])
                     if dist <= KICK_RANGE:
-                        other["health"] = max(0.0, other["health"] - KICK_DAMAGE)
-                        damage_total += KICK_DAMAGE
+                        old_hp = other["health"]
+                        new_hp = max(0.0, old_hp - KICK_DAMAGE)
+                        actual_damage = old_hp - new_hp
+                        other["health"] = new_hp
+                        damage_total += actual_damage
+                        if new_hp == 0.0:
+                            kill_bonus += 100.0
                         effects["impact"] = {"x": other["x"], "y": other["y"]}
                         break
-                return copy.deepcopy(state), damage_total, effects
+                return copy.deepcopy(state), damage_total + kill_bonus, effects
 
+            # ─── Bazooka ───────────────────────────────────────────────────────
             elif weapon == "bazooka":
                 angle = math.radians(float(action.get("angle_deg", 0.0)))
                 dx_unit, dy_unit = math.cos(angle), -math.sin(angle)
@@ -139,14 +148,20 @@ class GameCore:
                         if other["id"] == worm["id"] or other["health"] <= 0:
                             continue
                         if math.hypot(other["x"] - x_proj, other["y"] - y_proj) <= BAZOOKA_HIT_RADIUS:
-                            other["health"] = max(0.0, other["health"] - BAZOOKA_DAMAGE)
-                            damage_total += BAZOOKA_DAMAGE
+                            old_hp = other["health"]
+                            new_hp = max(0.0, old_hp - BAZOOKA_DAMAGE)
+                            actual_damage = old_hp - new_hp
+                            other["health"] = new_hp
+                            damage_total += actual_damage
+                            if new_hp == 0.0:
+                                kill_bonus += 100.0
                             effects["impact"] = {"x": x_proj, "y": y_proj}
                             t = BAZOOKA_MAX_RANGE + BAZOOKA_STEP_SIZE
                             break
                     t += BAZOOKA_STEP_SIZE
-                return copy.deepcopy(state), damage_total, effects
+                return copy.deepcopy(state), damage_total + kill_bonus, effects
 
+            # ─── Grenade ──────────────────────────────────────────────────────
             elif weapon == "grenade":
                 dx_total = float(action.get("dx", 0.0))
                 sign = 1.0 if dx_total >= 0 else -1.0
@@ -179,8 +194,13 @@ class GameCore:
                         if other["id"] == worm["id"] or other["health"] <= 0:
                             continue
                         if math.hypot(other["x"] - x_proj, other["y"] - y_proj) <= GRENADE_HIT_RADIUS:
-                            other["health"] = max(0.0, other["health"] - GRENADE_DAMAGE)
-                            damage_total += GRENADE_DAMAGE
+                            old_hp = other["health"]
+                            new_hp = max(0.0, old_hp - GRENADE_DAMAGE)
+                            actual_damage = old_hp - new_hp
+                            other["health"] = new_hp
+                            damage_total += actual_damage
+                            if new_hp == 0.0:
+                                kill_bonus += 100.0
                             effects["impact"] = {"x": x_proj, "y": y_proj}
                             hit = True
                             break
@@ -189,12 +209,13 @@ class GameCore:
 
                     t += GRENADE_STEP_SIZE
 
-                return copy.deepcopy(state), damage_total, effects
+                return copy.deepcopy(state), damage_total + kill_bonus, effects
 
             else:
                 logger.warning("Unknown weapon: %s", weapon)
                 return copy.deepcopy(state), 0.0, {}
 
+        # Default: no reward
         return copy.deepcopy(state), 0.0, effects
 
     def get_state_with_nicks(self, clients: Dict[Any, Dict[str, Any]]) -> Dict[str, Any]:
