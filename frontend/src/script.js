@@ -1,25 +1,29 @@
-import { Application, Container, Graphics } from 'pixi.js';
+// File: frontend/src/script.js
+
+import { Application, Container, Graphics, Text, Sprite, Texture, Assets } from 'pixi.js';
 
 let lastEnv = null;
 let playerId = null;
 let currentPlayer = null;
 let myTurn = false;
+let eliminated = false;
+let activeEffects = [];
 
 document.addEventListener('DOMContentLoaded', async () => {
-  // ---------- PIXI ----------------------------------------------------
-  const app = new Application();
   const canvasHeight = 400;
+  const app = new Application();
   await app.init({
     width: window.innerWidth,
     height: canvasHeight,
-    backgroundColor: '#1099bb',
+    backgroundColor: 0x1099bb
   });
-  document.getElementById('game-container').appendChild(app.canvas);
 
+  await Assets.load(['dirt.png', 'worm.png', 'explosion.png', 'boot.png']);
+
+  document.getElementById('game-container').appendChild(app.view);
   const content = new Container();
   app.stage.addChild(content);
 
-  // ---------- UI ELEMENTS ---------------------------------------------
   const statusBar = document.createElement('div');
   statusBar.id = 'status-bar';
   statusBar.style.cssText = 'padding:0.5em; text-align:center; font-family:sans-serif;';
@@ -46,20 +50,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   overlay.textContent = 'Waiting for opponent...';
   document.body.appendChild(overlay);
 
-  // ---------- Action presets ------------------------------------------
   const ACTIONS = [
     { action: 'stand' },
     { action: 'walk', dx: 1.0 },
-    { action: 'attack', weapon: 'kick', force: 70.0 },
+    { action: 'attack', weapon: 'kick' },
     { action: 'attack', weapon: 'bazooka', angle_deg: 120.0 },
-    { action: 'attack', weapon: 'grenade', angle_deg: 15.0, force: 50.0 },
+    { action: 'attack', weapon: 'grenade', dx: 4.0 },
   ];
 
-  // ---------- WebSocket -----------------------------------------------
   const socket = new WebSocket('ws://127.0.0.1:8765');
-
   socket.addEventListener('open', () => {
-    console.log('WebSocket connected');
     socket.send(JSON.stringify({ type: 'CONNECT', nick: 'browser' }));
   });
 
@@ -70,39 +70,62 @@ document.addEventListener('DOMContentLoaded', async () => {
         playerId = msg.player_id;
         statusBar.textContent = `You are Player ${playerId}`;
         break;
+
       case 'TURN_BEGIN':
+        activeEffects = activeEffects
+          .map(e => ({ ...e, ttl: e.ttl - 1 }))
+          .filter(e => e.ttl > 0);
+
         currentPlayer = msg.player_id;
         myTurn = currentPlayer === playerId;
         lastEnv = msg.state;
         drawEnvironment(lastEnv);
         updateUI();
         break;
+
       case 'TURN_RESULT':
         lastEnv = msg.state;
+        if (msg.effects && msg.effects.weapon) {
+          activeEffects.push({ ...msg.effects, ttl: 2 });
+        }
         drawEnvironment(lastEnv);
         break;
+
       case 'TURN_END':
         currentPlayer = msg.next_player_id;
         myTurn = currentPlayer === playerId;
         updateUI();
         break;
+
+      case 'PLAYER_ELIMINATED':
+        if (msg.player_id === playerId) {
+          eliminated = true;
+          myTurn = false;
+          statusBar.textContent = 'You have been eliminated';
+          sendBtn.disabled = true;
+          actionSelect.disabled = true;
+          actionParams.querySelectorAll('input').forEach(i => i.disabled = true);
+          overlay.textContent = 'Eliminated';
+          overlay.style.visibility = 'visible';
+        }
+        break;
+
       case 'GAME_OVER':
         alert(`Game over! Winner: ${msg.winner_id}`);
         myTurn = false;
         updateUI();
         break;
+
       case 'ERROR':
         console.error(msg.msg);
         break;
     }
   });
 
-  // ---------- UI CONTROLS ---------------------------------------------
   const actionSelect = document.getElementById('action-select');
   const actionParams = document.getElementById('action-params');
   const sendBtn = document.getElementById('send-action');
 
-  // Populate dropdown
   ACTIONS.forEach((a, i) => {
     const opt = document.createElement('option');
     let label = a.action;
@@ -136,18 +159,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   buildParams();
 
   function updateUI() {
-    // Set status text
-    if (playerId != null) {
+    if (playerId != null && !eliminated) {
       statusBar.textContent = myTurn
         ? `Your turn (Player ${playerId})`
         : `Waiting for Player ${currentPlayer}`;
+      sendBtn.disabled = !myTurn;
+      actionSelect.disabled = !myTurn;
+      actionParams.querySelectorAll('input').forEach(i => i.disabled = !myTurn);
+      overlay.style.visibility = myTurn ? 'hidden' : 'visible';
     }
-    // Enable/disable controls
-    sendBtn.disabled = !myTurn;
-    actionSelect.disabled = !myTurn;
-    actionParams.querySelectorAll('input').forEach(i => { i.disabled = !myTurn; });
-    // Show or hide overlay
-    overlay.style.visibility = myTurn ? 'hidden' : 'visible';
   }
 
   sendBtn.addEventListener('click', () => {
@@ -169,7 +189,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (lastEnv) drawEnvironment(lastEnv);
   });
 
-  // ---------- Rendering -----------------------------------------------
   function drawEnvironment(env) {
     content.removeChildren();
     const { map, worms = [] } = env;
@@ -181,32 +200,87 @@ document.addEventListener('DOMContentLoaded', async () => {
     const xMargin = (W - tileSize * cols) / 2;
     const yMargin = (H - tileSize * rows) / 2;
 
-    // Draw terrain
     map.forEach((row, y) => {
       row.forEach((cell, x) => {
-        const g = new Graphics();
-        g.beginFill(cell === 1 ? 0x000000 : 0x1099bb);
-        g.drawRect(
-          xMargin + x * tileSize,
-          yMargin + y * tileSize,
-          tileSize,
-          tileSize,
-        );
-        g.endFill();
-        content.addChild(g);
+        if (cell === 1) {
+          const spr = new Sprite(Texture.from('dirt.png'));
+          spr.width = tileSize;
+          spr.height = tileSize;
+          spr.x = xMargin + x * tileSize;
+          spr.y = yMargin + y * tileSize;
+          content.addChild(spr);
+        } else {
+          const g = new Graphics();
+          g.beginFill(0x1099bb);
+          g.drawRect(xMargin + x * tileSize, yMargin + y * tileSize, tileSize, tileSize);
+          g.endFill();
+          content.addChild(g);
+        }
       });
     });
 
-    // Draw worms (world‑unit coords)
     worms.forEach((w) => {
       const cx = xMargin + w.x * tileSize;
       const cy = yMargin + w.y * tileSize;
-      const r = tileSize * 0.4;
-      const c = new Graphics();
-      c.beginFill(0xff0000);
-      c.drawCircle(cx, cy, r);
-      c.endFill();
-      content.addChild(c);
+      const spr = new Sprite(Texture.from('worm.png'));
+      spr.anchor.set(0.5, 0.5);
+      spr.width = tileSize;
+      spr.height = tileSize;
+      spr.x = cx;
+      spr.y = cy;
+      content.addChild(spr);
+
+      const barWidth = tileSize * 0.8;
+      const barHeight = tileSize * 0.1;
+      const barX = cx - barWidth / 2;
+      const barY = cy - tileSize / 2 - barHeight - 2;
+      const bg = new Graphics();
+      bg.beginFill(0x555555);
+      bg.drawRect(barX, barY, barWidth, barHeight);
+      bg.endFill();
+      content.addChild(bg);
+
+      const fillRatio = Math.max(0, Math.min(w.health / 100, 1));
+      const fg = new Graphics();
+      const fillColor = w.health > 50
+        ? 0x00ff00
+        : w.health > 20
+        ? 0xffff00
+        : 0xff0000;
+      fg.beginFill(fillColor);
+      fg.drawRect(barX, barY, barWidth * fillRatio, barHeight);
+      fg.endFill();
+      content.addChild(fg);
+
+      const nameTxt = new Text(w.nick || `Player ${w.id}`, {
+        fontFamily: 'Arial',
+        fontSize: tileSize * 0.15,
+        fill: 0xffffff,
+      });
+      nameTxt.anchor.set(0.5, 1);
+      nameTxt.x = cx;
+      nameTxt.y = barY - 2;
+      content.addChild(nameTxt);
+    });
+
+    activeEffects.forEach(effect => {
+      effect.trajectory.forEach(p => {
+        const g = new Graphics();
+        g.beginFill(0xffff00);
+        g.drawCircle(xMargin + p.x * tileSize, yMargin + p.y * tileSize, tileSize * 0.1);
+        g.endFill();
+        content.addChild(g);
+      });
+      if (effect.impact) {
+        const spriteName = effect.weapon === 'kick' ? 'boot.png' : 'explosion.png';
+        const spr = new Sprite(Texture.from(spriteName));
+        spr.anchor.set(0.5, 0.5);
+        spr.width = tileSize;
+        spr.height = tileSize;
+        spr.x = xMargin + effect.impact.x * tileSize;
+        spr.y = yMargin + effect.impact.y * tileSize;
+        content.addChild(spr);
+      }
     });
   }
 });

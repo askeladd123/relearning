@@ -7,6 +7,13 @@ This is an overview of my ongoing project using reinfocement learning to play th
 - [[#reinfocement client]]
 - [[#json documentation]]
 
+# instructions
+Please tell me if you think there are inconsistancies with my descriptions and the code. Also tell me if you have clarifying questions before finishing my request.
+
+If you made changes or created a new file, provide the path and the full code, not just snippets of what you changed. 
+
+Send me the files in code blocks in chat.
+
 # description
 (open description.md)
 
@@ -61,5 +68,7 @@ This is a type of agent that decides actions based on a reinforcement model, and
 ---
 
 # json documentation
+
+## `./json-docs.md`:
 (open ./json-docs.md)
 '
