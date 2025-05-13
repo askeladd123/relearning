@@ -1,4 +1,3 @@
-# File: environment/server.py
 #!/usr/bin/env python3
 """
 Continuous W.O.R.M.S. match server.
@@ -18,6 +17,8 @@ from typing import Any, Dict
 import websockets
 from websockets.exceptions import ConnectionClosed
 
+TIME_LIMIT_MS = 15000
+
 # ensure game_core is importable
 sys.path.append(str(Path(__file__).resolve().parent))
 from game_core import GameCore
@@ -33,7 +34,6 @@ class WSState(IntEnum):
 class WormsServer:
     def __init__(self, expected_players: int) -> None:
         self.expected = expected_players
-        # initial core only used until first game start
         self.core = GameCore(expected_players=self.expected)
         self.clients: dict[Any, dict[str, Any]] = {}
         self.turn_order: list[Any] = []
@@ -87,7 +87,6 @@ class WormsServer:
             await self._safe_send(ws, msg)
 
     async def _play_single_game(self) -> None:
-        # --- ← new game start: force a fresh map & state each time
         self.core = GameCore(expected_players=self.expected)
         self.turn_counter = 0
         self.idx = 0
@@ -139,7 +138,7 @@ class WormsServer:
                 "turn_index": self.turn_counter,
                 "player_id": pid,
                 "state": self.core.get_state_with_nicks(self.clients),
-                "time_limit_ms": 15000,
+                "time_limit_ms": TIME_LIMIT_MS,
             }
             if not await self._safe_send(ws, begin):
                 continue
@@ -182,7 +181,9 @@ class WormsServer:
             await self._play_single_game()
 
 async def main() -> None:
-    parser = argparse.ArgumentParser(description="W.O.R.M.S. continuous server")
+    parser = argparse.ArgumentParser(
+        description="W.O.R.M.S. continuous server"
+    )
     parser.add_argument(
         "--log-level",
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
