@@ -1,241 +1,404 @@
 # agents/a2c_manual/main_a2c.py
+import os
+
+# Prøv å sette denne FØR andre importer for å håndtere OMP-feilen
+# Dette er en workaround og kan skjule underliggende problemer i sjeldne tilfeller.
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+
 import asyncio
 import websockets
 import json
-import time
 import torch
 import numpy as np
-from .agent import A2CAgent
-from . import config  # Bruk relativ import
+import argparse
+from pathlib import Path
+import signal
+import matplotlib
+
+matplotlib.use('Agg')  # Bytt til Agg backend FØR pyplot importeres for ikke-interaktiv plotting
+import matplotlib.pyplot as plt
+import random  # For random sleep
+
+from .agent import A2CAgent  # Relativ import
+from . import config  # Relativ import
+
+# --- Global logging for plotting ---
+TRAINING_STATS = {}  # {agent_id_str: {"game_rewards": [], "policy_losses": [], ...}}
+PLOT_DIR = Path(__file__).resolve().parent / "training_plots_output"
+PLOT_DIR.mkdir(parents=True, exist_ok=True)
+
+SHUTDOWN_FLAG = asyncio.Event()
 
 
-# (Setup logging her hvis du vil, likt som i client.py eller server.py. For enkelhets skyld, print brukes her)
+def signal_handler_main(signum, frame):
+    if not SHUTDOWN_FLAG.is_set():
+        print("\n(Hovedkoordinator) Mottok avslutningssignal (Ctrl+C). Setter shutdown flagg...")
+        SHUTDOWN_FLAG.set()
+    else:
+        print("(Hovedkoordinator) Avslutningssignal allerede mottatt...")
 
-async def run_agent():
+
+async def run_single_agent_session(agent_id_str: str, checkpoint_filename: str):
     uri = f"ws://{config.SERVER_HOST}:{config.SERVER_PORT}"
-    a2c_agent = A2CAgent()
-    episode_count = 0
-    all_episode_rewards_log = []  # For plotting
-    losses_log = {'policy': [], 'value': [], 'entropy': []}  # For plotting
+    agent_name = f"A2C_Agent_{agent_id_str}"
+    a2c_agent = A2CAgent(agent_name=agent_name)
 
-    checkpoint_path = "a2c_worms_checkpoint.pth"
-    try:
-        a2c_agent.network.load_state_dict(torch.load(checkpoint_path, map_location=torch.device(config.DEVICE)))
-        print(f"Lastet sjekkpunkt for modellen fra {checkpoint_path}.")
-    except FileNotFoundError:
-        print(f"Ingen sjekkpunkt funnet på {checkpoint_path}, starter med ny modell.")
-    except Exception as e:
-        print(f"Kunne ikke laste sjekkpunkt: {e}")
+    if agent_id_str not in TRAINING_STATS:
+        TRAINING_STATS[agent_id_str] = {
+            "game_rewards_raw": [],  # Belønning for hvert spill
+            "policy_loss_per_game": [],  # Gj.snitt policy loss for hvert spill
+            "value_loss_per_game": [],  # Gj.snitt value loss for hvert spill
+            "entropy_loss_per_game": [],  # Gj.snitt entropy loss for hvert spill
+            "games_played_count": 0,
+            "total_steps_across_games": 0
+        }
 
-    print(f"Starter {config.NUM_EPISODES} episoder med A2C agent...")
+    checkpoint_path = Path(__file__).resolve().parent / checkpoint_filename
+    a2c_agent.load_model(checkpoint_path)
 
-    for episode_idx in range(config.NUM_EPISODES):
-        episode_reward_sum = 0
-        # Agentens buffere tømmes i agent.learn() eller agent.clear_buffers()
-        # a2c_agent.clear_buffers() # Kan kalles her for ekstra sikkerhet
+    connection_attempts = 0
+    max_connection_attempts = 10  # Litt mer tålmodig
 
-        game_over_flag = False
-        last_received_state = None  # For å ha state tilgjengelig for learn() hvis tilkobling brytes
+    while not SHUTDOWN_FLAG.is_set() and \
+            TRAINING_STATS[agent_id_str]["games_played_count"] < config.NUM_GAMES_PER_AGENT_SESSION:
 
-        print(f"\n--- Starter Episode {episode_idx + 1}/{config.NUM_EPISODES} ---")
+        # Buffere for ett enkelt spill
+        temp_policy_losses = []
+        temp_value_losses = []
+        temp_entropy_losses = []
+        current_game_step_rewards = []  # Belønninger for hvert steg i dette spillet
+
+        a2c_agent.clear_buffers()  # Sørg for at agentens interne buffere er tomme
+
+        current_game_id = None
+        is_my_turn_flag = False
+        am_i_eliminated_this_game = False
+        last_known_state_for_learn = None
+        steps_this_game = 0
+
+        # print(f"[{agent_name}] Venter på nytt spill / prøver å koble til...")
         try:
-            async with websockets.connect(uri, ping_interval=20, ping_timeout=20) as websocket:
-                # 1. CONNECT og ASSIGN_ID
-                await websocket.send(json.dumps({"type": "CONNECT", "nick": "A2C-JetBot"}))
-                assign_id_msg_str = await websocket.recv()
+            async with websockets.connect(uri, ping_interval=20, ping_timeout=30, open_timeout=15) as websocket:
+                connection_attempts = 0
+                await websocket.send(json.dumps({"type": "CONNECT", "nick": agent_name}))
+
+                assign_id_msg_str = await asyncio.wait_for(websocket.recv(), timeout=10)
                 assign_id_msg = json.loads(assign_id_msg_str)
 
                 if assign_id_msg.get("type") == "ASSIGN_ID":
                     player_id = assign_id_msg.get("player_id")
                     if player_id is None:
-                        print("FEIL: Fikk ikke player_id. Avslutter episoden.")
-                        await asyncio.sleep(1)  # Vent litt før neste forsøk
-                        continue  # Neste episode
+                        print(f"[{agent_name}] FEIL: Fikk ikke player_id. Venter.")
+                        await asyncio.sleep(random.uniform(3, 7))
+                        continue
                     a2c_agent.set_player_id(player_id)
-                    print(f"Tilkoblet server. Tildelt Player ID: {a2c_agent.player_id}.")
                 else:
-                    print(f"FEIL: Forventet ASSIGN_ID, fikk: {assign_id_msg}. Avslutter episoden.")
-                    await asyncio.sleep(1)
+                    print(f"[{agent_name}] FEIL: Forventet ASSIGN_ID, fikk: {assign_id_msg}. Venter.")
+                    await asyncio.sleep(random.uniform(3, 7))
                     continue
 
-                # Hoved meldingsløkke for episoden
+                # print(f"[{agent_name}] Tilkoblet. Min Player ID: {a2c_agent.player_id}.")
+
                 async for message_str in websocket:
+                    if SHUTDOWN_FLAG.is_set(): break
                     try:
                         msg = json.loads(message_str)
                         msg_type = msg.get("type")
-                        # print(f"DEBUG: Mottok: {msg_type} - {str(msg)[:150]}") # Kort debug
 
-                        if msg_type == "TURN_BEGIN":
-                            last_received_state = msg.get("state")  # Lagre for learn() ved evt. disconnect
-                            if msg.get("player_id") == a2c_agent.player_id:
-                                turn_idx = msg.get('turn_index', -1)
-                                print(f"  Min tur (P{a2c_agent.player_id}, Turn {turn_idx}). State mottatt.")
-                                if not last_received_state:
-                                    print("  FEIL: TURN_BEGIN mangler 'state'. Hopper over handling.")
-                                    continue
+                        if msg_type == "NEW_GAME":
+                            new_game_id = msg.get("game_id")
+                            # Hvis vi var midt i et spill, og det ikke ble fullført (ingen GAME_OVER/PLAYER_ELIMINATED)
+                            # og vi har data, prøv å lære fra det (mindre ideelt, men bedre enn ingenting).
+                            if current_game_id is not None and current_game_id != new_game_id and \
+                                    not am_i_eliminated_this_game and a2c_agent.rewards_buffer:
+                                print(
+                                    f"[{agent_name}] Uventet NEW_GAME (ID: {new_game_id}) før GAME_OVER for spill {current_game_id}. Prøver å lære fra ufullstendig data.")
+                                p_l, v_l, e_l = a2c_agent.learn(last_known_state_for_learn, True)  # Anta done=True
+                                if p_l is not None:
+                                    temp_policy_losses.append(p_l)
+                                    temp_value_losses.append(v_l)
+                                    temp_entropy_losses.append(e_l)
+                                # Logg dette "ufullstendige" spillet
+                                TRAINING_STATS[agent_id_str]['game_rewards_raw'].append(sum(current_game_step_rewards))
+                                if temp_policy_losses: TRAINING_STATS[agent_id_str]['policy_loss_per_game'].append(
+                                    np.mean(temp_policy_losses))
+                                if temp_value_losses: TRAINING_STATS[agent_id_str]['value_loss_per_game'].append(
+                                    np.mean(temp_value_losses))
+                                if temp_entropy_losses: TRAINING_STATS[agent_id_str]['entropy_loss_per_game'].append(
+                                    np.mean(temp_entropy_losses))
+                                TRAINING_STATS[agent_id_str]["games_played_count"] += 1
+                                TRAINING_STATS[agent_id_str]["total_steps_across_games"] += steps_this_game
 
-                                action_to_send_obj = a2c_agent.select_action(last_received_state)
-                                action_payload = {
-                                    "type": "ACTION",
-                                    "player_id": a2c_agent.player_id,
+                            current_game_id = new_game_id
+                            # print(f"[{agent_name}] --- Nytt spill (ID: {current_game_id}) for P{a2c_agent.player_id} ---")
+                            a2c_agent.clear_buffers()
+                            temp_policy_losses, temp_value_losses, temp_entropy_losses, current_game_step_rewards = [], [], [], []
+                            am_i_eliminated_this_game = False
+                            is_my_turn_flag = False
+                            last_known_state_for_learn = msg.get("state")
+                            steps_this_game = 0
+
+                        elif msg_type == "TURN_BEGIN":
+                            if current_game_id is None: continue
+
+                            game_state_for_action = msg.get("state")
+                            last_known_state_for_learn = game_state_for_action
+
+                            if msg.get("player_id") == a2c_agent.player_id and not am_i_eliminated_this_game:
+                                is_my_turn_flag = True
+                                steps_this_game += 1
+                                if not game_state_for_action:
+                                    action_to_send_obj = {"action": "stand"}
+                                    a2c_agent.values_buffer.append(torch.tensor(0.0, device=config.DEVICE))
+                                else:
+                                    action_to_send_obj = a2c_agent.select_action(game_state_for_action)
+
+                                await websocket.send(json.dumps({
+                                    "type": "ACTION", "player_id": a2c_agent.player_id,
                                     "action": action_to_send_obj
-                                }
-                                print(f"    Sender handling: {action_payload['action']}")
-                                await websocket.send(json.dumps(action_payload))
-                            # else: Ikke min tur, ignorer
+                                }))
+                            else:
+                                is_my_turn_flag = False
 
                         elif msg_type == "TURN_RESULT":
-                            # Kun lagre reward hvis det var vår handling
-                            if msg.get("player_id") == a2c_agent.player_id:
+                            if current_game_id is None: continue
+                            last_known_state_for_learn = msg.get("state")
+                            if msg.get("player_id") == a2c_agent.player_id and is_my_turn_flag:
                                 reward = msg.get("reward", 0.0)
                                 a2c_agent.store_reward(reward)
-                                episode_reward_sum += reward
-                                print(f"  Mottok reward: {reward}. Total ep. reward: {episode_reward_sum:.2f}")
-                            last_received_state = msg.get("state")  # Oppdater uansett
+                                current_game_step_rewards.append(reward)
+                            is_my_turn_flag = False
 
-                        elif msg_type == "TURN_END":
-                            pass  # Vent på neste TURN_BEGIN
+                        elif msg_type == "PLAYER_ELIMINATED":
+                            if current_game_id is None: continue
+                            elim_player_id = msg.get("player_id")
+                            if elim_player_id == a2c_agent.player_id and not am_i_eliminated_this_game:
+                                am_i_eliminated_this_game = True
+                                if a2c_agent.rewards_buffer:  # Bare lær hvis det var noen handlinger
+                                    p_l, v_l, e_l = a2c_agent.learn(last_known_state_for_learn, True)  # done=True
+                                    if p_l is not None:
+                                        temp_policy_losses.append(p_l)
+                                        temp_value_losses.append(v_l)
+                                        temp_entropy_losses.append(e_l)
+                                else:
+                                    a2c_agent.clear_buffers()
 
                         elif msg_type == "GAME_OVER":
-                            print(f"GAME OVER mottatt. Vinner: {msg.get('winner_id')}. ")
-                            game_over_flag = True
-                            final_state = msg.get("final_state")
-                            # Hvis siste handling ikke var vår, har vi ikke en reward for final_state.
-                            # A2C lærer vanligvis fra (s, a, r, s_next).
-                            # Hvis det ikke var vår tur sist, er siste reward i buffer fra forrige handling.
-                            # V(final_state) vil være 0.
+                            if current_game_id is None: continue
 
-                            # Sørg for at vi har en state å sende til learn, selv om det var en annen spillers tur sist
-                            current_state_for_learn = final_state if final_state else last_received_state
+                            final_state_for_learn = msg.get("final_state")
+                            if not am_i_eliminated_this_game and a2c_agent.rewards_buffer:
+                                p_l, v_l, e_l = a2c_agent.learn(final_state_for_learn, True)  # done=True
+                                if p_l is not None:
+                                    temp_policy_losses.append(p_l)
+                                    temp_value_losses.append(v_l)
+                                    temp_entropy_losses.append(e_l)
+                            elif not am_i_eliminated_this_game and not a2c_agent.rewards_buffer:
+                                a2c_agent.clear_buffers()
 
-                            if not a2c_agent.rewards_buffer:  # Hvis ingen handlinger ble tatt av agenten
-                                print("  Ingen handlinger/rewards lagret denne episoden. Ingen læring.")
-                            else:
-                                pol_l, val_l, ent_l = a2c_agent.learn(current_state_for_learn, True)  # True for done
-                                if pol_l is not None:
-                                    losses_log['policy'].append(pol_l)
-                                    losses_log['value'].append(val_l)
-                                    losses_log['entropy'].append(ent_l)
-                                    print(
-                                        f"  Lært fra episode. Losses - P: {pol_l:.4f}, V: {val_l:.4f}, E: {ent_l:.4f}")
-                            break  # Bryt meldingsløkken, episoden er ferdig
+                            # Logg statistikk for det fullførte spillet
+                            TRAINING_STATS[agent_id_str]['game_rewards_raw'].append(sum(current_game_step_rewards))
+                            if temp_policy_losses: TRAINING_STATS[agent_id_str]['policy_loss_per_game'].append(
+                                np.mean(temp_policy_losses))
+                            if temp_value_losses: TRAINING_STATS[agent_id_str]['value_loss_per_game'].append(
+                                np.mean(temp_value_losses))
+                            if temp_entropy_losses: TRAINING_STATS[agent_id_str]['entropy_loss_per_game'].append(
+                                np.mean(temp_entropy_losses))
+
+                            TRAINING_STATS[agent_id_str]["games_played_count"] += 1
+                            TRAINING_STATS[agent_id_str]["total_steps_across_games"] += steps_this_game
+
+                            games_count_this_agent = TRAINING_STATS[agent_id_str]["games_played_count"]
+                            print(
+                                f"[{agent_name}] Spill {current_game_id} ferdig. Belønning: {sum(current_game_step_rewards):.2f}. (Agent totalt {games_count_this_agent} spill, {steps_this_game} steg i dette spillet)")
+
+                            if games_count_this_agent > 0 and games_count_this_agent % config.SAVE_MODEL_EVERY_N_GAMES == 0:
+                                a2c_agent.save_model(checkpoint_path)
+
+                            if games_count_this_agent > 0 and games_count_this_agent % config.PLOT_STATS_EVERY_N_GAMES == 0:
+                                plot_aggregated_training_results()
+
+                            current_game_id = None  # Klar for neste NEW_GAME melding
+
+                        elif msg_type == "TURN_END":
+                            pass
 
                         elif msg_type == "ERROR":
-                            print(f"FEIL fra server: {msg.get('msg')}")
-                            # Vurder å tømme buffere hvis feilen gjør episoden ugyldig
-                            # a2c_agent.clear_buffers()
+                            print(f"[{agent_name}] FEIL fra server: {msg.get('msg')}")
 
                     except json.JSONDecodeError:
-                        print(f"FEIL: Kunne ikke dekode JSON fra server: {message_str}")
+                        print(f"[{agent_name}] FEIL: Kunne ikke dekode JSON: {message_str}")
+                    except websockets.exceptions.ConnectionClosed as e_ws_msg:
+                        print(f"[{agent_name}] Tilkobling lukket (under melding): {e_ws_msg}.")
+                        break
                     except Exception as e_inner:
-                        print(f"FEIL i meldingsløkke: {type(e_inner).__name__} - {e_inner}")
-                        game_over_flag = True  # Anta episoden er korrupt
-                        break  # Bryt meldingsløkken
+                        print(f"[{agent_name}] FEIL i meldingsløkke: {type(e_inner).__name__} - {e_inner}")
+                        break
 
-                # Etter meldingsløkken (enten GAME_OVER eller disconnect)
-                if not game_over_flag and a2c_agent.rewards_buffer:  # Disconnect før GAME_OVER
-                    print("Advarsel: Tilkobling lukket før GAME_OVER, men data samlet. Lærer (antar 'done').")
-                    # Bruk sist kjente state hvis mulig
-                    state_for_learn = last_received_state if last_received_state else {}
-                    pol_l, val_l, ent_l = a2c_agent.learn(state_for_learn, True)
-                    if pol_l is not None:
-                        losses_log['policy'].append(pol_l);
-                        losses_log['value'].append(val_l);
-                        losses_log['entropy'].append(ent_l)
+            # Håndter disconnect utenom GAME_OVER (hvis data finnes og spillet var i gang)
+            if current_game_id is not None and not am_i_eliminated_this_game and a2c_agent.rewards_buffer:
+                print(f"[{agent_name}] Lærer fra ufullstendig spill {current_game_id} pga. disconnect.")
+                p_l, v_l, e_l = a2c_agent.learn(last_known_state_for_learn, True)
+                if p_l is not None:
+                    temp_policy_losses.append(p_l)
+                    temp_value_losses.append(v_l)
+                    temp_entropy_losses.append(e_l)
+                # Logg dette ufullstendige spillet også
+                TRAINING_STATS[agent_id_str]['game_rewards_raw'].append(sum(current_game_step_rewards))
+                if temp_policy_losses: TRAINING_STATS[agent_id_str]['policy_loss_per_game'].append(
+                    np.mean(temp_policy_losses))
+                if temp_value_losses: TRAINING_STATS[agent_id_str]['value_loss_per_game'].append(
+                    np.mean(temp_value_losses))
+                if temp_entropy_losses: TRAINING_STATS[agent_id_str]['entropy_loss_per_game'].append(
+                    np.mean(temp_entropy_losses))
+                TRAINING_STATS[agent_id_str]["games_played_count"] += 1
+                TRAINING_STATS[agent_id_str]["total_steps_across_games"] += steps_this_game
 
-        except websockets.exceptions.ConnectionClosed as e:
-            print(f"Tilkobling lukket: {e}. Prøver neste episode.")
-            if not game_over_flag and a2c_agent.rewards_buffer:  # Lær hvis data finnes
-                print("  Lærer fra ufullstendig episode (ConnectionClosed).")
-                state_for_learn = last_received_state if last_received_state else {}
-                pol_l, val_l, ent_l = a2c_agent.learn(state_for_learn, True)
-                if pol_l: losses_log['policy'].append(pol_l); losses_log['value'].append(val_l); losses_log[
-                    'entropy'].append(ent_l)
-        except ConnectionRefusedError:
-            print(f"FEIL: Kunne ikke koble til server {uri}. Er den startet? Venter 10s.")
-            await asyncio.sleep(10)
-            continue  # Prøv å starte en ny episodeforbindelse
-        except Exception as e_outer:
-            print(f"Alvorlig FEIL i episode {episode_idx + 1}: {type(e_outer).__name__} - {e_outer}")
-            if not game_over_flag and a2c_agent.rewards_buffer:
-                print("  Lærer fra ufullstendig episode (Alvorlig feil).")
-                state_for_learn = last_received_state if last_received_state else {}
-                pol_l, val_l, ent_l = a2c_agent.learn(state_for_learn, True)
-                if pol_l: losses_log['policy'].append(pol_l); losses_log['value'].append(val_l); losses_log[
-                    'entropy'].append(ent_l)
-            await asyncio.sleep(5)  # Pause før neste forsøk
+            if SHUTDOWN_FLAG.is_set():
+                print(f"[{agent_name}] Avslutter økt pga shutdown flagg.")
+                break
 
-        all_episode_rewards_log.append(episode_reward_sum)
-        print(f"--- Episode {episode_idx + 1} avsluttet. Total belønning: {episode_reward_sum:.2f} ---")
-
-        # Lagre sjekkpunkt periodisk
-        if (episode_idx + 1) % 50 == 0:
+        except (websockets.exceptions.WebSocketException, ConnectionRefusedError, asyncio.TimeoutError) as e_conn:
+            connection_attempts += 1
+            wait_time = min(2 ** connection_attempts, 60)
+            print(f"[{agent_name}] Tilkoblingsfeil ({type(e_conn).__name__}). Prøver igjen om {wait_time}s.")
+            if connection_attempts >= max_connection_attempts and not SHUTDOWN_FLAG.is_set():
+                print(f"[{agent_name}] Maks antall tilkoblingsforsøk nådd. Avslutter denne agent-økten.")
+                SHUTDOWN_FLAG.set()
+                break
             try:
-                torch.save(a2c_agent.network.state_dict(), checkpoint_path)
-                print(f"Lagret modell sjekkpunkt til {checkpoint_path} etter episode {episode_idx + 1}")
-            except Exception as e_save:
-                print(f"Kunne ikke lagre modell: {e_save}")
+                await asyncio.sleep(wait_time)
+            except asyncio.CancelledError:
+                if SHUTDOWN_FLAG.is_set(): break
+        except Exception as e_outer:
+            print(
+                f"[{agent_name}] Alvorlig FEIL (ytre løkke): {type(e_outer).__name__} - {e_outer}. Avslutter agent-økt.")
+            # import traceback; traceback.print_exc()
+            SHUTDOWN_FLAG.set()  # Signaliser at noe gikk galt
+            break
 
-        # Liten pause mellom episoder for å unngå å hamre serveren
-        await asyncio.sleep(0.1)
+    print(f"[{agent_name}] Økt ferdig. Totalt {TRAINING_STATS[agent_id_str]['games_played_count']} spill behandlet.")
+    a2c_agent.save_model(checkpoint_path)
 
-    print("\nTrening ferdig etter alle episoder.")
-    # Plotting (samme som før)
+
+def plot_aggregated_training_results():
     try:
-        import matplotlib.pyplot as plt
-        avg_rewards = []
-        if all_episode_rewards_log:
-            window_size = min(100, len(all_episode_rewards_log))
-            if window_size > 0:
-                avg_rewards = [np.mean(all_episode_rewards_log[max(0, i - window_size + 1):i + 1]) for i in
-                               range(len(all_episode_rewards_log))]
+        num_agents_with_data = sum(1 for agent_id in TRAINING_STATS if TRAINING_STATS[agent_id]["game_rewards_raw"])
+        if num_agents_with_data == 0:
+            print("Ingen data å plotte for noen agenter.")
+            return
 
-        plt.figure(figsize=(18, 6))
-        plt.subplot(1, 3, 1)
-        plt.plot(all_episode_rewards_log, label='Rå belønning', alpha=0.6)
-        if avg_rewards: plt.plot(avg_rewards, label=f'Glidende gj.snitt ({window_size} ep)', color='red', linewidth=2)
-        plt.xlabel("Episode");
-        plt.ylabel("Total belønning");
-        plt.title("Belønning per episode")
-        plt.legend();
-        plt.grid(True)
+        # Dynamisk bestem antall rader for subplots
+        num_plot_rows = 0
+        for agent_id_str in TRAINING_STATS:
+            if TRAINING_STATS[agent_id_str]["game_rewards_raw"]:  # Bare tell agenter med data
+                num_plot_rows += 1
+        if num_plot_rows == 0: return  # Ingen data å plotte
 
-        if losses_log['policy']:  # Sjekk om det er noe å plotte
-            plt.subplot(1, 3, 2)
-            plt.plot(losses_log['policy'], label='Policy Loss')
-            plt.xlabel("Læringssteg");
-            plt.ylabel("Policy Loss");
-            plt.title("Policy (Actor) Tap")
-            plt.legend();
-            plt.grid(True)
+        fig, axs = plt.subplots(num_plot_rows, 3, figsize=(20, 6 * num_plot_rows), squeeze=False)
+        current_plot_row = 0
 
-            plt.subplot(1, 3, 3)
-            plt.plot(losses_log['value'], label='Value Loss', color='green')
-            plt.xlabel("Læringssteg");
-            plt.ylabel("Value Loss");
-            plt.title("Value (Critic) Tap")
-            plt.legend();
-            plt.grid(True)
+        for agent_id_str, stats in TRAINING_STATS.items():
+            if not stats["game_rewards_raw"]:
+                continue
 
-        # Du kan også plotte entropi hvis du vil:
-        # if losses_log['entropy']:
-        #     plt.figure() # Ny figur for entropi
-        #     plt.plot(losses_log['entropy'], label='Entropy (neg)')
-        #     plt.xlabel("Læringssteg"); plt.ylabel("Entropy (neg)"); plt.title("Entropi")
-        #     plt.legend(); plt.grid(True)
+            # Rewards
+            rewards_raw = stats["game_rewards_raw"]
+            policy_losses_pg = stats.get('policy_loss_per_game', [])
+            value_losses_pg = stats.get('value_loss_per_game', [])
 
-        plt.tight_layout()
-        plt.savefig("training_plots_worms_a2c_new_protocol.png")
-        print("Lagret treningsplot som training_plots_worms_a2c_new_protocol.png")
-        # plt.show() # Kommenter ut hvis du kjører uten GUI
+            axs[current_plot_row, 0].cla()
+            axs[current_plot_row, 0].plot(rewards_raw, label='Belønning per spill', alpha=0.7, linestyle='-',
+                                          marker='.', markersize=3)
+            if len(rewards_raw) >= 10:
+                window = min(max(10, len(rewards_raw) // 10), 100)
+                avg_rewards = np.convolve(rewards_raw, np.ones(window) / window, mode='valid')
+                axs[current_plot_row, 0].plot(np.arange(window - 1, len(rewards_raw)), avg_rewards,
+                                              label=f'Gj.snitt ({window} spill)', color='red', lw=2)
+            axs[current_plot_row, 0].set_title(f"Agent {agent_id_str} - Belønning")
+            axs[current_plot_row, 0].set_xlabel("Spill #");
+            axs[current_plot_row, 0].set_ylabel("Total Belønning")
+            axs[current_plot_row, 0].legend();
+            axs[current_plot_row, 0].grid(True)
+
+            # Policy Loss
+            axs[current_plot_row, 1].cla()
+            if policy_losses_pg: axs[current_plot_row, 1].plot(policy_losses_pg, label='Policy Loss', marker='.',
+                                                               markersize=3)
+            axs[current_plot_row, 1].set_title(f"Agent {agent_id_str} - Policy Tap (per spill)")
+            axs[current_plot_row, 1].set_xlabel("Spill #");
+            axs[current_plot_row, 1].set_ylabel("Gj.snitt Policy Tap")
+            axs[current_plot_row, 1].legend();
+            axs[current_plot_row, 1].grid(True)
+
+            # Value Loss
+            axs[current_plot_row, 2].cla()
+            if value_losses_pg: axs[current_plot_row, 2].plot(value_losses_pg, label='Value Loss', color='green',
+                                                              marker='.', markersize=3)
+            axs[current_plot_row, 2].set_title(f"Agent {agent_id_str} - Value Tap (per spill)")
+            axs[current_plot_row, 2].set_xlabel("Spill #");
+            axs[current_plot_row, 2].set_ylabel("Gj.snitt Value Tap")
+            axs[current_plot_row, 2].legend();
+            axs[current_plot_row, 2].grid(True)
+
+            current_plot_row += 1
+
+        plt.tight_layout(pad=2.5)  # Juster padding
+        plot_filename = PLOT_DIR / f"aggregated_training_plots_a2c_game_avg.png"
+        plt.savefig(plot_filename)
+        print(f"Lagret/oppdatert aggregert treningsplot: {plot_filename}")
+        plt.close(fig)
+
     except ImportError:
         print("Matplotlib ikke installert. Kan ikke plotte resultater.")
     except Exception as plot_e:
         print(f"Kunne ikke plotte resultater: {type(plot_e).__name__} - {plot_e}")
+        # import traceback; traceback.print_exc()
+
+
+async def main_coordinator():
+    parser = argparse.ArgumentParser(description="Kjør A2C agenter for W.O.R.M.S.")
+    parser.add_argument("--num_agents", type=int, default=1, choices=[1, 2],
+                        help="Antall agenter å kjøre (1 eller 2). Server må støtte dette.")
+    args = parser.parse_args()
+
+    signal.signal(signal.SIGINT, signal_handler_main)
+    signal.signal(signal.SIGTERM, signal_handler_main)
+
+    tasks = []
+    if args.num_agents >= 1:
+        print("(Koordinator) Forbereder Agent 1...")
+        tasks.append(asyncio.create_task(run_single_agent_session(
+            agent_id_str="1",
+            checkpoint_filename="a2c_worms_agent1_checkpoint.pth"
+        )))
+    if args.num_agents == 2:
+        print("(Koordinator) Forbereder Agent 2...")
+        # Ingen sleep her, la dem starte så samtidig som mulig
+        tasks.append(asyncio.create_task(run_single_agent_session(
+            agent_id_str="2",
+            checkpoint_filename="a2c_worms_agent2_checkpoint.pth"
+        )))
+
+    if not tasks:
+        print("Ingen agenter spesifisert.")
+        return
+
+    print(f"(Koordinator) Starter {len(tasks)} agent-økt(er)...")
+    try:
+        await asyncio.gather(*tasks)
+    except asyncio.CancelledError:
+        print("(Koordinator) Hovedoppgave (gather) kansellert.")
+
+    print("\n(Koordinator) Alle agent-økter er avsluttet eller avbrutt.")
+    print("(Koordinator) Genererer endelige plott...")
+    plot_aggregated_training_results()
+    print("(Koordinator) Programmet avsluttes.")
 
 
 if __name__ == "__main__":
     try:
-        asyncio.run(run_agent())
+        asyncio.run(main_coordinator())
     except KeyboardInterrupt:
-        print("\nTrening avbrutt av bruker.")
+        print("\n(Hovedprogram) KeyboardInterrupt fanget helt på slutten. Avslutter.")
+        SHUTDOWN_FLAG.set()

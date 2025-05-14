@@ -7,16 +7,32 @@ Følgende mappenavn blir også fullstendig ignorert (i tillegg til andre skjulte
 
     |-- description.md
         --- START INNHOLD (description.md) ---
-        *Turn‑based Reinforcement‑Learning playground*
+        *Turn-based Reinforcement-Learning playground*
         
-        The goal is to train an AI to play W.O.R.M.S.. I also want to be able to test the game against the agents. That is why I chose to modularize into components, that communicate through websockets:
-        - server / environment: manages communication with clients and simulates the environment
-        - cli client / ai agent: choses actions based on the gives environment, and learns
-        - web client: user can take the role as a player and manually chose actions against the AI. This is visualize as a simple game interface in the browser
+        The goal is to train an AI to play free-for-all W.O.R.M.S. This means that each agent controls one worm, and the goal is to kill all other opponents.
+        
+        I want to be able to test the game against the AI agents. That is why I chose to modularize into components that communicate through WebSockets:
+        - server / environment: manages communication with clients and simulates the environment  
+        - CLI client / AI agent: chooses actions based on the given environment, and learns  
+        - Web client: user can take the role as a player and manually choose actions against the AI; visualized via a simple browser interface
         
         ---
         
-        ## 1  High‑level Picture
+        ## Scoring
+        
+        Each action yields a numeric **reward** which agents use to learn:
+        
+        - **Damage points**  
+          You earn points equal to the actual HP removed from any opponent.  
+          - _Example_: you bazooka-hit a worm at 30 HP with a 60-damage shot → you earn **30 points**.
+        
+        - **Kill bonus**  
+          If an action reduces an opponent’s HP to exactly 0, you get an extra **100 points**.  
+          - _Example_: you kick-hit a worm at 1 HP (kick = 80 damage) → you earn **1 (damage) + 100 (kill bonus) = 101 points**.
+        
+        ---
+        
+        ## 1  High-level Picture
         
         ```
         
@@ -24,9 +40,9 @@ Følgende mappenavn blir også fullstendig ignorert (i tillegg til andre skjulte
         │  Browser │◀─────────────────────────▶│  Server     │
         │ (Pixi UI)│                           │ (env + core)│
         └────┬─────┘                           └────┬────────┘
-             │ WebSocket/JSON                        │
-             │                                       │
-             ▼                                       ▼
+        │ WebSocket/JSON                        │
+        │                                       │
+        ▼                                       ▼
         ┌──────────┐      WebSocket/JSON       ┌─────────────┐
         │  RL Bot  │◀─────────────────────────▶│  GameCore   │
         │ (Python) │                           │  (pure logic)
@@ -35,24 +51,21 @@ Følgende mappenavn blir også fullstendig ignorert (i tillegg til andre skjulte
         ````
         
         * **Server / Environment** (`environment/`)  
-          Runs a match, owns the authoritative **`GameCore`** logic, and speaks the
-          JSON protocol over **WebSockets**.  
-        * **Agents** (`agents/`)  
-          CLI clients—human or reinforcement‑learning models—that connect, read
-          `TURN_BEGIN`, decide an `ACTION`, and learn from `TURN_RESULT`.  
-        * **Web Client** (`frontend/`)  
-          Pixi.js interface for humans: shows the map full‑width, lets you pick
-          actions via dropdown + dynamic parameter inputs, and renders worms in
-          sub‑tile positions.
+          Runs a match, owns the authoritative **`GameCore`** logic, and speaks the JSON protocol over WebSockets.  
         
-        Everything communicates through **one common surface**: the JSON messages
-        documented in `json-docs.md`.
+        * **Agents** (`agents/`)  
+          CLI clients—human or reinforcement-learning models—that connect, read `TURN_BEGIN`, decide an `ACTION`, and learn from `TURN_RESULT`.  
+        
+        * **Web Client** (`frontend/`)  
+          Pixi.js interface for humans: shows the map full-width, lets you pick actions via dropdown + dynamic parameter inputs, and renders worms in sub-tile positions.
+        
+        Everything communicates through **one common surface**: the JSON messages documented in `json-docs.md`.
         
         ---
         
-        ## 2  Runtime Flow
+        ## 2  Runtime Flow
         
-        1. **CONNECT** Clients open `ws://127.0.0.1:8765` and send
+        1. **CONNECT** Clients open `ws://127.0.0.1:8765` and send  
            ```json
            { "type": "CONNECT", "nick": "<name>" }
         ````
@@ -67,34 +80,31 @@ Følgende mappenavn blir også fullstendig ignorert (i tillegg til andre skjulte
         
            repeats until `GAME_OVER`.
         
-        3. Clients render or learn from the **Game State** snapshot inside each
-           `TURN_BEGIN` / `TURN_RESULT`.  The state contains:
+        3. Clients render or learn from the **Game State** snapshot inside each `TURN_BEGIN` / `TURN_RESULT`. The state contains:
         
-           * `worms` with **world‑unit** `(x,y)` floats
+           * `worms` with **world-unit** `(x,y)` floats
            * `map` grid with `1 = terrain`, `0 = empty`
         
-        4. **Physics & rules** (to‑be‑implemented) live entirely in `GameCore.step()`.
+        4. **Physics & rules** (fully in `GameCore.step()`).
         
         ---
         
-        ## 3  Coordinate System
+        ## 3  Coordinate System
         
-        * **Tile grid** Index `(0,0)` is top‑left.
-        * **World units** 1 world‑unit ≙ 1 tile.  Worms can be at `3.2, 1.75` etc.
-        * **Screen mapping** (client side)
+        * **Tile grid** Index `(0,0)` is top-left.
+        * **World units** 1 world-unit ≙ 1 tile; worms can be at `3.2, 1.75`, etc.
+        * **Screen mapping** (client side):
         
+          ```js
+          tile   = Math.min(canvasW / cols, canvasH / rows);
+          offset = [(canvasW - tile*cols)/2, (canvasH - tile*rows)/2];
+          pixelX = offset[0] + xWorld * tile;
+          pixelY = offset[1] + yWorld * tile;
           ```
-          tile   = min(canvasW / cols, canvasH / rows)
-          offset = ((canvasW-tile*cols)/2, (canvasH-tile*rows)/2)
-          pixelX = offset.x + xWorld * tile
-          pixelY = offset.y + yWorld * tile
-          ```
-        
-        This keeps the grid centred and lets agents move smoothly within a tile.
         
         ---
         
-        ## 4  Components in Detail
+        ## 4  Components in Detail
         
         | Folder         | Key files                            | Role                                  |
         | -------------- | ------------------------------------ | ------------------------------------- |
@@ -103,7 +113,7 @@ Følgende mappenavn blir også fullstendig ignorert (i tillegg til andre skjulte
         | `frontend/`    | `src/script.js`, `public/index.html` | Pixi.js UI + dynamic action form      |
         | root           | `json-docs.md`                       | Authoritative protocol spec           |
         
-        ### Build / Run Quick‑start
+        ### Build / Run Quick-start
         
         ```bash
         # Python side
@@ -111,38 +121,22 @@ Følgende mappenavn blir også fullstendig ignorert (i tillegg til andre skjulte
         
         # Web UI
         cd frontend
-        npm i            # (once)
+        npm install        # (once)
         npx esbuild src/script.js --bundle --outfile=public/bundle.js --format=esm
-        npx serve public # or any static server
+        npx serve public
         
-        # Random bot
+        # Bot
         cd agents && python client.py
         ```
-        
-        ---
-        
-        ## 5  Extensibility Guidelines
-        
-        * **Physics upgrades** Add terrain slopes or water by extending the `map`
-          encoding; clients ignore unknown keys.
-        * **New actions** Introduce additional `action` variants in `json-docs.md`
-          (clients will ignore ones they don’t understand).
-        * **More players** `GameCore.expected_players()` controls how many `CONNECT`s
-          start a match.
-        * **Rewards** Fill the `reward` field in `TURN_RESULT`; RL agents train on it.
-        
-        ---
         --- SLUTT INNHOLD (description.md) ---
 
     |-- json-docs.md
         --- START INNHOLD (json-docs.md) ---
-        # W.O.R.M.S. WebSocket JSON Protocol
+        # W.O.R.M.S. WebSocket JSON Protocol
         
         All messages are JSON objects sent over a WebSocket.  
         Each object **must** include a `"type"` field that selects one of the structures below.  
         Clients **must ignore** unknown keys so the protocol can evolve.
-        
-        Numbers follow JS/Python IEEE‑754 semantics unless noted.
         
         ---
         
@@ -160,35 +154,35 @@ Følgende mappenavn blir også fullstendig ignorert (i tillegg til andre skjulte
               until  │  TURN_BEGIN ───────────────────────────▶│
            GAME_OVER │  ACTION       ◀──────────────────────── │
                      │  TURN_RESULT ─────────────────────────▶ │
-                     │  TURN_END    ─────────────────────────▶ │
+                     │  TURN_END    ─────────────────────────▶ │  ← Now sent after each turn
                      │                                         │
                      └─▶ GAME_OVER   ◀─────────────────────────┤
         ````
         
         ---
         
-        ## 1  Messages
+        ## 1  Messages
         
-        ### 1.1 CONNECT  (client → server)
+        ### 1.1 CONNECT  (client → server)
         
         | Field       | Type    | Required | Description                       |
         | ----------- | ------- | -------- | --------------------------------- |
         | `type`      | string  | ✓        | `"CONNECT"`                       |
         | `nick`      | string  | ✗        | Human nickname (for logs / UI)    |
-        | `spectator` | boolean | ✗        | `true` to observe without playing |
+        | `spectator` | boolean | ✗        | `true` to observe without playing |
         
         ```json
-        { "type": "CONNECT", "nick": "bot‑42" }
+        { "type": "CONNECT", "nick": "bot-42" }
         ```
         
         ---
         
-        ### 1.2 ASSIGN\_ID  (server → client)
+        ### 1.2 ASSIGN\_ID  (server → client)
         
         | Field       | Type    | Required | Description                                     |
         | ----------- | ------- | -------- | ----------------------------------------------- |
         | `type`      | string  | ✓        | `"ASSIGN_ID"`                                   |
-        | `player_id` | integer | ✗        | Omitted for spectators; starts at 1 for players |
+        | `player_id` | integer | ✗        | Omitted for spectators; starts at 1 for players |
         
         ```json
         { "type": "ASSIGN_ID", "player_id": 2 }
@@ -196,19 +190,19 @@ Følgende mappenavn blir også fullstendig ignorert (i tillegg til andre skjulte
         
         ---
         
-        ### 1.3 TURN\_BEGIN  (server → all)
+        ### 1.3 TURN\_BEGIN  (server → all)
         
         | Field           | Type       | Required | Description                        |
         | --------------- | ---------- | -------- | ---------------------------------- |
         | `type`          | string     | ✓        | `"TURN_BEGIN"`                     |
-        | `turn_index`    | integer    | ✓        | 0‑based global turn counter        |
+        | `turn_index`    | integer    | ✓        | 0-based global turn counter        |
         | `player_id`     | integer    | ✓        | ID whose turn it is                |
-        | `state`         | Game State | ✓        | Full snapshot                      |
+        | `state`         | Game State | ✓        | Full snapshot                      |
         | `time_limit_ms` | integer    | ✓        | How long that player has to answer |
         
         ---
         
-        ### 1.4 ACTION  (client → server)
+        ### 1.4 ACTION  (client → server)
         
         Sent **only** by the `player_id` that just received `TURN_BEGIN`.
         
@@ -220,63 +214,77 @@ Følgende mappenavn blir også fullstendig ignorert (i tillegg til andre skjulte
         
         #### `action` variants
         
-        | Variant         | Required keys                                                                     | Notes                           |
-        | --------------- | --------------------------------------------------------------------------------- | ------------------------------- |
-        | stand           | `{ "action": "stand" }`                                                           | –                               |
-        | walk            | `{ "action": "walk", "dx": float }`                                               | `dx` in world units (+ → right) |
-        | attack\:kick    | `{ "action": "attack", "weapon": "kick", "force": 0‑100 }`                        | –                               |
-        | attack\:bazooka | `{ "action": "attack", "weapon": "bazooka", "angle_deg": float }`                 | 0 ° = right, CCW positive       |
-        | attack\:grenade | `{ "action": "attack", "weapon": "grenade", "angle_deg": float, "force": 0‑100 }` | –                               |
+        | Variant         | Required keys                                                     | Notes                                                 |
+        | --------------- | ----------------------------------------------------------------- | ----------------------------------------------------- |
+        | stand           | `{ "action": "stand" }`                                           |                                                       |
+        | walk            | `{ "action": "walk", "dx": float }`                               | `dx` in world units (+ → right); **max dx = 2**       |
+        | attack\:kick    | `{ "action": "attack", "weapon": "kick" }`                        | Flat 80 damage to the first living worm within 1 unit |
+        | attack\:bazooka | `{ "action": "attack", "weapon": "bazooka", "angle_deg": float }` | 0° = right, CCW positive                              |
+        | attack\:grenade | `{ "action": "attack", "weapon": "grenade", "dx": float }`        | Single `dx` (max dx = 5); horizontal distance only    |
+        
+        Gravity is applied **instantly** only after a **walk** action: the worm falls in the same column until it lands on the first solid tile (`map[row][col] == 1`) or exits below the last row (water), which sets its `health` to `0`.
         
         ---
         
-        ### 1.5 TURN\_RESULT  (server → all)
+        ### 1.5 TURN\_RESULT  (server → all)
         
-        | Field        | Type       | Required | Description                       |
-        | ------------ | ---------- | -------- | --------------------------------- |
-        | `type`       | string     | ✓        | `"TURN_RESULT"`                   |
-        | `turn_index` | integer    | ✓        | Same index as the triggering turn |
-        | `player_id`  | integer    | ✓        | The acting player                 |
-        | `state`      | Game State | ✓        | Resulting state                   |
-        | `reward`     | number     | ✗        | Optional per‑turn reward          |
-        
-        ---
-        
-        ### 1.6 TURN\_END  (server → all)
-        
-        | Field            | Type    | Required | Description       |
-        | ---------------- | ------- | -------- | ----------------- |
-        | `type`           | string  | ✓        | `"TURN_END"`      |
-        | `next_player_id` | integer | ✓        | Who will act next |
+        | Field        | Type       | Required | Description                                    |
+        | ------------ | ---------- | -------- | ---------------------------------------------- |
+        | `type`       | string     | ✓        | `"TURN_RESULT"`                                |
+        | `turn_index` | integer    | ✓        | Same index as the triggering turn              |
+        | `player_id`  | integer    | ✓        | The acting player                              |
+        | `state`      | Game State | ✓        | Resulting state                                |
+        | `reward`     | number     | ✗        | Points earned this turn:                       |
+        |              |            |          | • actual HP removed from any target(s)         |
+        |              |            |          | • **+100** if the action killed a worm         |
+        | `effects`    | object     | ✗        | Optional visual-only data (weapon, trajectory) |
         
         ---
         
-        ### 1.7 GAME\_OVER  (server → all)
+        ### 1.6 TURN\_END  (server → all)
+        
+        | Field            | Type    | Required | Description          |
+        | ---------------- | ------- | -------- | -------------------- |
+        | `type`           | string  | ✓        | `"TURN_END"`         |
+        | `next_player_id` | integer | ✓        | ID who will act next |
+        
+        ---
+        
+        ### 1.7 PLAYER\_ELIMINATED  (server → all)
+        
+        | Field       | Type    | Required | Description                 |
+        | ----------- | ------- | -------- | --------------------------- |
+        | `type`      | string  | ✓        | `"PLAYER_ELIMINATED"`       |
+        | `player_id` | integer | ✓        | ID of the eliminated player |
+        
+        ---
+        
+        ### 1.8 GAME\_OVER  (server → all)
         
         | Field         | Type       | Required | Description        |
         | ------------- | ---------- | -------- | ------------------ |
         | `type`        | string     | ✓        | `"GAME_OVER"`      |
         | `winner_id`   | integer    | ✗        | Winner’s ID if any |
-        | `final_state` | Game State | ✓        | Final snapshot     |
+        | `final_state` | Game State | ✓        | Final snapshot     |
         
         ---
         
-        ### 1.8 ERROR  (server → client)
+        ### 1.9 ERROR  (server → client)
         
         | Field  | Type   | Required | Description         |
         | ------ | ------ | -------- | ------------------- |
         | `type` | string | ✓        | `"ERROR"`           |
-        | `msg`  | string | ✓        | Human‑readable text |
+        | `msg`  | string | ✓        | Human-readable text |
         
         ---
         
-        ## 2  Game State
+        ## 2  Game State
         
         ```jsonc
         {
           "worms": [
-            { "id": 0, "health": 100, "x": 3.20, "y": 1.75 },
-            { "id": 1, "health":  90, "x": 6.00, "y": 2.00 }
+            { "id": 0, "nick": "Alice", "health": 100, "x": 3.20, "y": 1.75 },
+            { "id": 1, "nick": "Bot-42", "health":  90, "x": 6.00, "y": 2.00 }
           ],
           "map": [
             [1,0,0,0,0,0,0,0],
@@ -287,27 +295,23 @@ Følgende mappenavn blir også fullstendig ignorert (i tillegg til andre skjulte
         }
         ```
         
-        | Key     | Type          | Description                                                                                   |
-        | ------- | ------------- | --------------------------------------------------------------------------------------------- |
-        | `worms` | array         | Each worm’s `id`, `health` (0‑100), and **position** in world units (floats; 1 unit = 1 tile) |
-        | `map`   | 2‑D int array | `1` = solid terrain, `0` = empty/water. Index (0,0) is top‑left                               |
+        | Key     | Type          | Description                                                                                                        |
+        | ------- | ------------- | ------------------------------------------------------------------------------------------------------------------ |
+        | `worms` | array         | Each worm’s **`id`**, **`nick`**, **`health`**, and **position** in world units (`x`, `y` floats; 1 unit = 1 tile) |
+        | `map`   | 2-D int array | `1` = solid terrain, `0` = empty air. Values below the last row kill a worm instantly when fallen into water.      |
         
         Clients **must ignore** any extra keys they do not understand.
         
         ---
         
-        ## 3  Rendering rule (client hint)
-        
-        To draw the map centred in the canvas:
+        ## 3  Rendering rule (client hint)
         
         ```text
         tile = min(canvasW / cols, canvasH / rows)
         xMargin = (canvasW − tile*cols)/2
         yMargin = (canvasH − tile*rows)/2
-        tile(i,j) at (xMargin + i*tile , yMargin + j*tile)
+        draw tile(i,j) at (xMargin + i*tile , yMargin + j*tile)
         ```
-        
-        This leaves a minimal margin on one axis while fully filling the other.
         --- SLUTT INNHOLD (json-docs.md) ---
 
     |-- plan.md
@@ -317,6 +321,11 @@ Følgende mappenavn blir også fullstendig ignorert (i tillegg til andre skjulte
         - **frontend**: reads data and plays it in a browser
         --- SLUTT INNHOLD (plan.md) ---
 
+    |-- todo.md
+        --- START INNHOLD (todo.md) ---
+        max time for a game to last, incase of bugs
+        --- SLUTT INNHOLD (todo.md) ---
+
 agents/
     |-- __init__.py
         [--- INNHOLD: Tom fil ---]
@@ -324,7 +333,10 @@ agents/
     |-- client.py
         --- START INNHOLD (client.py) ---
         #!/usr/bin/env python3
-        """Simple random bot for W.O.R.M.S."""
+        """
+        Reference bot that now keeps its WebSocket open across many games.
+        It rests while eliminated and wakes up when NEW_GAME arrives.
+        """
         import argparse
         import asyncio
         import json
@@ -333,30 +345,20 @@ agents/
         
         import websockets
         
-        # ─── Define custom TRACE level ─────────────────────────────────────
-        TRACE_LEVEL_NUM = 5
-        logging.addLevelName(TRACE_LEVEL_NUM, "TRACE")
-        logging.TRACE = TRACE_LEVEL_NUM               # expose logging.TRACE
-        def trace(self, message, *args, **kwargs):
-            if self.isEnabledFor(TRACE_LEVEL_NUM):
-                self._log(TRACE_LEVEL_NUM, message, args, **kwargs)
-        logging.Logger.trace = trace
-        
-        # ─── Parse --log-level & configure ────────────────────────────────
         def setup_logging() -> logging.Logger:
             parser = argparse.ArgumentParser(description="W.O.R.M.S. bot client")
             parser.add_argument(
                 "--log-level",
-                choices=["TRACE", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+                choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
                 default="INFO",
-                help="set logging level"
+                help="set logging level",
             )
             args = parser.parse_args()
             level = getattr(logging, args.log_level)
             logging.basicConfig(
                 level=level,
                 format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
-                datefmt="%H:%M:%S"
+                datefmt="%H:%M:%S",
             )
             return logging.getLogger("client")
         
@@ -367,30 +369,45 @@ agents/
         ACTIONS = [
             {"action": "stand"},
             {"action": "walk", "dx": 1.0},
-            {"action": "attack", "weapon": "kick", "force": 70.0},
-            {"action": "attack", "weapon": "bazooka", "angle_deg": 90.0},
-            {"action": "attack", "weapon": "grenade", "angle_deg": 30.0, "force": 50.0},
+            {"action": "attack", "weapon": "kick"},
+            {"action": "attack", "weapon": "bazooka", "angle_deg": 30.0},
+            {"action": "attack", "weapon": "grenade", "dx": 2.0},
         ]
         
         async def start_client() -> None:
             uri = f"ws://{HOST}:{PORT}"
             logger.info("connecting to %s", uri)
+        
             async with websockets.connect(uri) as ws:
                 await ws.send(json.dumps({"type": "CONNECT", "nick": "bot"}))
-                logger.info("sent CONNECT")
                 player_id: int | None = None
-                async for message in ws:
-                    msg = json.loads(message)
+                eliminated = False
+        
+                async for raw in ws:
+                    msg = json.loads(raw)
                     t = msg.get("type")
+        
                     if t == "ASSIGN_ID":
                         player_id = msg["player_id"]
                         logger.info("assigned player_id=%d", player_id)
-                        continue
-                    if t == "TURN_BEGIN" and msg["player_id"] == player_id:
+        
+                    elif t == "PLAYER_ELIMINATED" and msg.get("player_id") == player_id:
+                        eliminated = True
+                        logger.info("I have been eliminated this game")
+        
+                    elif t == "NEW_GAME":
+                        eliminated = False
+                        logger.info("new episode %s started – back in the game!", msg.get("game_id"))
+        
+                    elif t == "TURN_BEGIN" and msg.get("player_id") == player_id and not eliminated:
                         action = random.choice(ACTIONS)
                         payload = {"type": "ACTION", "player_id": player_id, "action": action}
                         await ws.send(json.dumps(payload))
                         logger.debug("did action: %r", payload)
+        
+                    elif t == "TURN_RESULT" and msg.get("player_id") == player_id:
+                        reward = msg.get("reward", 0.0)
+                        logger.info("received reward=%.1f", reward)
         
         if __name__ == "__main__":
             asyncio.run(start_client())
@@ -408,6 +425,7 @@ agents/
             import torch.nn.functional as F
             from torch.distributions import Categorical, Normal
             import numpy as np
+            from pathlib import Path
             
             from . import config
             from .model import ActorCriticNetwork
@@ -415,11 +433,13 @@ agents/
             
             
             class A2CAgent:
-                def __init__(self):
+                def __init__(self, agent_name="A2C_Agent_Default"):
                     self.network = ActorCriticNetwork().to(config.DEVICE)
                     self.optimizer = optim.Adam(self.network.parameters(), lr=config.LEARNING_RATE)
-                    self.player_id = None
+                    self.player_id = None  # Settes av main_a2c.py ved ASSIGN_ID
+                    self.agent_name = agent_name  # For logging og unike sjekkpunktfiler
             
+                    # Buffere for ett læringssteg (tømmes etter hver .learn())
                     self.log_probs_buffer = []
                     self.values_buffer = []
                     self.rewards_buffer = []
@@ -427,205 +447,176 @@ agents/
             
                 def set_player_id(self, player_id: int):
                     self.player_id = player_id
-                    print(f"Agentens player_id er satt til: {self.player_id}")
+                    # print(f"[{self.agent_name}] Player ID satt til: {self.player_id}")
             
                 def select_action(self, current_game_state_json: dict):
                     if self.player_id is None:
-                        print("FEIL select_action: Agent player_id er ikke satt. Returnerer 'stand'.")
+                        # print(f"[{self.agent_name}] FEIL select_action: Player ID ikke satt. Sender 'stand'.")
+                        return {"action": "stand"}
+            
+                    # Sjekk om vår orm er i live før vi gjør noe
+                    my_worm_json_id = self.player_id - 1
+                    is_my_worm_alive = any(
+                        w['id'] == my_worm_json_id and w['health'] > 0
+                        for w in current_game_state_json.get('worms', [])
+                    )
+                    if not is_my_worm_alive:
+                        # print(f"[{self.agent_name}] Info select_action: Min orm (P{self.player_id}) er ikke lenger i live. Sender 'stand'.")
+                        # Det er viktig å lagre noe i bufferne selv om vi sender stand, slik at learn() ikke krasjer
+                        # pga. ulik bufferlengde. En dummy-verdi (f.eks. for V(s)) er nok.
+                        # Siden vi ikke tar en reell handling, lagrer vi ikke log_prob eller entropi.
+                        # Value for en "død" state kan anses som 0.
+                        self.values_buffer.append(torch.tensor(0.0, device=config.DEVICE, dtype=torch.float32))
                         return {"action": "stand"}
             
                     map_tensor, worm_vector_tensor = preprocess_state(current_game_state_json, self.player_id)
             
-                    actor_outputs, state_value = self.network(map_tensor, worm_vector_tensor)
+                    try:
+                        actor_outputs, state_value_tensor = self.network(map_tensor, worm_vector_tensor)
+                    except Exception as e:
+                        print(f"[{self.agent_name}] FEIL under network forward pass i select_action: {e}")
+                        # Fallback for å unngå krasj, og lagre dummy value
+                        self.values_buffer.append(torch.tensor(0.0, device=config.DEVICE, dtype=torch.float32))
+                        return {"action": "stand"}
             
-                    squeezed_state_value = state_value.squeeze()
-                    self.values_buffer.append(squeezed_state_value)
+                    self.values_buffer.append(state_value_tensor.squeeze())  # Skalar tensor
             
                     action_type_probs = actor_outputs['action_type_probs']
                     action_type_dist = Categorical(action_type_probs)
-                    network_action_idx_tensor = action_type_dist.sample()  # Dette er en tensor, f.eks. tensor([2])
-                    network_action_idx_item = network_action_idx_tensor.item()  # Få Python-int for indeksering
+                    network_action_idx_tensor = action_type_dist.sample()  # 0-dim tensor
+                    network_action_idx_item = network_action_idx_tensor.item()
             
-                    # Gjør om til skalar tensor ved å bruke .squeeze() hvis den har batch-dim,
-                    # eller ved å hente ut elementet hvis det er en 1-element tensor.
-                    # For Categorical.log_prob(sample), hvis sample er en 0-dim tensor, er output 0-dim.
-                    # Hvis sample er 1-dim (som network_action_idx_tensor), er output 1-dim.
-                    log_prob_action = action_type_dist.log_prob(network_action_idx_tensor).squeeze()
-                    entropy_action = action_type_dist.entropy().squeeze()
+                    log_prob_action_type = action_type_dist.log_prob(network_action_idx_tensor)  # Skalar
+                    entropy_action_type = action_type_dist.entropy()  # Skalar
             
-                    # print(f"DEBUG select_action: log_prob_action={log_prob_action}, shape={log_prob_action.shape}")
-                    # print(f"DEBUG select_action: entropy_action={entropy_action}, shape={entropy_action.shape}")
-            
-                    step_log_probs = [log_prob_action]
-                    step_entropies = [entropy_action]
-            
-                    chosen_network_action_name = config.NETWORK_ACTION_ORDER[network_action_idx_item]
-                    # print(f"DEBUG select_action: Chosen action_name: {chosen_network_action_name}")
+                    step_log_probs = [log_prob_action_type]
+                    step_entropies = [entropy_action_type]
                     params_for_formatting = {}
+                    chosen_network_action_name = config.NETWORK_ACTION_ORDER[network_action_idx_item]
             
                     if chosen_network_action_name == 'walk':
                         walk_dx_probs = actor_outputs['walk_dx_probs']
                         walk_dx_dist = Categorical(walk_dx_probs)
                         walk_dx_bin_idx_tensor = walk_dx_dist.sample()
                         params_for_formatting['walk_dx_bin_idx'] = walk_dx_bin_idx_tensor.item()
-                        log_p = walk_dx_dist.log_prob(walk_dx_bin_idx_tensor).squeeze()
-                        ent_p = walk_dx_dist.entropy().squeeze()
-                        # print(f"DEBUG select_action (walk): log_p_param={log_p}, shape={log_p.shape}")
-                        step_log_probs.append(log_p)
-                        step_entropies.append(ent_p)
+                        step_log_probs.append(walk_dx_dist.log_prob(walk_dx_bin_idx_tensor))
+                        step_entropies.append(walk_dx_dist.entropy())
             
                     elif chosen_network_action_name == 'attack_kick':
-                        mean, std = actor_outputs['kick_params']
-                        # Normal tar skalar mean/std hvis output fra FC er [batch, 1] og vi squeezer
-                        dist = Normal(mean.squeeze(), std.squeeze())
-                        force_val = dist.sample()  # force_val vil være skalar
-                        params_for_formatting['kick_force_val'] = force_val.item()
-                        log_p = dist.log_prob(force_val)  # log_prob av skalar er skalar
-                        ent_p = dist.entropy()  # entropi av dist med skalar params er skalar
-                        # print(f"DEBUG select_action (kick): log_p_param={log_p}, shape={log_p.shape}")
-                        step_log_probs.append(log_p)
-                        step_entropies.append(ent_p)
+                        # Ingen parametere å sample for kick iht. nye specs
+                        pass
             
                     elif chosen_network_action_name == 'attack_bazooka':
                         angle_mean, angle_std = actor_outputs['bazooka_params']
                         dist = Normal(angle_mean.squeeze(), angle_std.squeeze())
-                        angle_val = dist.sample()
-                        params_for_formatting['bazooka_angle_val'] = angle_val.item()
-                        log_p = dist.log_prob(angle_val)
-                        ent_p = dist.entropy()
-                        # print(f"DEBUG select_action (bazooka): log_p_param_angle={log_p}, shape={log_p.shape}")
-                        step_log_probs.append(log_p)
-                        step_entropies.append(ent_p)
+                        angle_val_tensor = dist.sample()
+                        params_for_formatting['bazooka_angle_val'] = angle_val_tensor.item()
+                        step_log_probs.append(dist.log_prob(angle_val_tensor))
+                        step_entropies.append(dist.entropy())
             
                     elif chosen_network_action_name == 'attack_grenade':
-                        angle_mean, angle_std, force_mean, force_std = actor_outputs['grenade_params']
-                        # Angle
-                        angle_dist = Normal(angle_mean.squeeze(), angle_std.squeeze())
-                        angle_val = angle_dist.sample()
-                        params_for_formatting['grenade_angle_val'] = angle_val.item()
-                        log_p_angle = angle_dist.log_prob(angle_val)
-                        ent_p_angle = angle_dist.entropy()
-                        # print(f"DEBUG select_action (grenade): log_p_param_angle={log_p_angle}, shape={log_p_angle.shape}")
-                        step_log_probs.append(log_p_angle)
-                        step_entropies.append(ent_p_angle)
+                        grenade_dx_probs = actor_outputs['grenade_dx_probs']
+                        grenade_dx_dist = Categorical(grenade_dx_probs)
+                        grenade_dx_bin_idx_tensor = grenade_dx_dist.sample()
+                        params_for_formatting['grenade_dx_bin_idx'] = grenade_dx_bin_idx_tensor.item()
+                        step_log_probs.append(grenade_dx_dist.log_prob(grenade_dx_bin_idx_tensor))
+                        step_entropies.append(grenade_dx_dist.entropy())
             
-                        # Force
-                        force_dist = Normal(force_mean.squeeze(), force_std.squeeze())
-                        force_val = force_dist.sample()
-                        params_for_formatting['grenade_force_val'] = force_val.item()
-                        log_p_force = force_dist.log_prob(force_val)
-                        ent_p_force = force_dist.entropy()
-                        # print(f"DEBUG select_action (grenade): log_p_param_force={log_p_force}, shape={log_p_force.shape}")
-                        step_log_probs.append(log_p_force)
-                        step_entropies.append(ent_p_force)
-            
-                    # Nå skal alle elementer i step_log_probs og step_entropies være skalar-tensorer (0-dim)
-                    # print(f"DEBUG select_action: step_log_probs before stack: {[lp.shape for lp in step_log_probs]}")
                     try:
-                        # torch.stack lager en 1D tensor fra listen av skalarer
+                        # Sikre at alle elementer er skalar-tensorer før stack
+                        step_log_probs = [lp.squeeze() for lp in step_log_probs]
+                        step_entropies = [e.squeeze() for e in step_entropies]
+            
                         stacked_log_probs = torch.stack(step_log_probs)
-                        summed_log_probs = stacked_log_probs.sum()  # Summerer 1D tensoren til en skalar
-                    except Exception as e:
-                        print(f"FEIL i select_action under stacking/summing av log_probs: {e}")
-                        print(f"  step_log_probs var: {step_log_probs}")
-                        summed_log_probs = torch.tensor(0.0, device=config.DEVICE, dtype=torch.float32)
+                        summed_log_probs = stacked_log_probs.sum()
+                        self.log_probs_buffer.append(summed_log_probs)
             
-                    self.log_probs_buffer.append(summed_log_probs)
-            
-                    # print(f"DEBUG select_action: step_entropies before stack: {[e.shape for e in step_entropies]}")
-                    try:
                         stacked_entropies = torch.stack(step_entropies)
                         summed_entropies = stacked_entropies.sum()
-                    except Exception as e:
-                        print(f"FEIL i select_action under stacking/summing av entropies: {e}")
-                        print(f"  step_entropies var: {step_entropies}")
-                        summed_entropies = torch.tensor(0.0, device=config.DEVICE, dtype=torch.float32)
-            
-                    self.entropies_buffer.append(summed_entropies)
+                        self.entropies_buffer.append(summed_entropies)
+                    except Exception as e_stack:
+                        print(f"[{self.agent_name}] FEIL select_action stacking/summing: {e_stack}")
+                        # Fallback for å opprettholde buffer-integritet
+                        self.log_probs_buffer.append(torch.tensor(0.0, device=config.DEVICE, dtype=torch.float32))
+                        self.entropies_buffer.append(torch.tensor(0.0, device=config.DEVICE, dtype=torch.float32))
             
                     action_json_to_send = format_action(network_action_idx_item, params_for_formatting)
-            
                     return action_json_to_send
             
                 def store_reward(self, reward: float):
                     self.rewards_buffer.append(reward)
             
                 def learn(self, next_game_state_json: dict | None, done: bool):
-                    if not self.log_probs_buffer or not self.rewards_buffer or not self.values_buffer:
-                        # print(f"DEBUG learn: Buffers tomme. log_probs_buffer: {len(self.log_probs_buffer)}, rewards_buffer: {len(self.rewards_buffer)}, values_buffer: {len(self.values_buffer)}")
+                    # Kritisk sjekk: Antall lagrede verdier må matche antall lagrede rewards.
+                    # Hver 'select_action' legger til i log_probs, values, entropies.
+                    # Hver 'store_reward' (som kalles etter en handling) legger til i rewards.
+                    # Så lengden på rewards_buffer skal være lik lengden på de andre bufferne
+                    # *før* vi legger til V(s_next) eller gjør noe med returns.
+            
+                    num_rewards = len(self.rewards_buffer)
+                    consistent_buffers = (
+                            len(self.log_probs_buffer) == num_rewards and
+                            len(self.values_buffer) == num_rewards and  # values_buffer har V(s_0) ... V(s_T-1)
+                            len(self.entropies_buffer) == num_rewards
+                    )
+            
+                    if not consistent_buffers or num_rewards == 0:
+                        # print(f"[{self.agent_name}] DEBUG learn: Ujevne eller tomme buffere. Tømmer og returnerer.")
+                        # print(f"  LP:{len(self.log_probs_buffer)} V:{len(self.values_buffer)} R:{len(self.rewards_buffer)} E:{len(self.entropies_buffer)}")
                         self.clear_buffers()
                         return None, None, None
-            
-                        # print(f"DEBUG learn: Antall steg i buffer: log_probs={len(self.log_probs_buffer)}, values={len(self.values_buffer)}, rewards={len(self.rewards_buffer)}, entropies={len(self.entropies_buffer)}")
             
                     R_bootstrap = torch.tensor(0.0, device=config.DEVICE, dtype=torch.float32)
                     if not done:
                         if next_game_state_json and self.player_id is not None:
-                            if isinstance(next_game_state_json, dict) and next_game_state_json.get(
-                                    "map") and next_game_state_json.get("worms"):
-                                next_map, next_worm = preprocess_state(next_game_state_json, self.player_id)
-                                with torch.no_grad():
-                                    _, next_value = self.network(next_map, next_worm)
-                                    R_bootstrap = next_value.squeeze()  # Blir skalar
-                            else:
-                                # print(f"WARN learn: next_game_state_json er ugyldig for bootstrapping ved done=False: {str(next_game_state_json)[:200]}. Bruker V(s_next)=0.")
-                                pass  # R_bootstrap forblir 0.0
+                            my_worm_json_id = self.player_id - 1
+                            is_my_worm_alive_in_next_state = any(
+                                w['id'] == my_worm_json_id and w['health'] > 0
+                                for w in next_game_state_json.get('worms', [])
+                            )
+                            if is_my_worm_alive_in_next_state:
+                                if isinstance(next_game_state_json, dict) and \
+                                        next_game_state_json.get("map") and next_game_state_json.get("worms"):
+                                    next_map, next_worm = preprocess_state(next_game_state_json, self.player_id)
+                                    with torch.no_grad():
+                                        _, next_value_tensor = self.network(next_map, next_worm)
+                                        R_bootstrap = next_value_tensor.squeeze()
             
                     returns = []
                     R_discounted = R_bootstrap
-                    for r_idx in range(len(self.rewards_buffer) - 1, -1, -1):
+                    for r_idx in range(num_rewards - 1, -1, -1):
                         reward_val = torch.tensor(self.rewards_buffer[r_idx], device=config.DEVICE, dtype=torch.float32)
                         R_discounted = reward_val + config.GAMMA * R_discounted
                         returns.insert(0, R_discounted)
             
-                    if not returns:
-                        # print("FEIL learn: `returns` listen er tom etter beregning.")
+                    if not returns:  # Bør ikke skje hvis num_rewards > 0
                         self.clear_buffers()
                         return None, None, None
             
                     try:
-                        # Alle buffere skal nå inneholde skalar-tensorer.
-                        # torch.stack vil lage 1D tensorer.
                         returns_tensor = torch.stack(returns).detach()
-                        values_tensor = torch.stack(self.values_buffer)
+                        values_tensor = torch.stack(self.values_buffer)  # values_buffer skal ha num_rewards elementer
                         log_probs_tensor = torch.stack(self.log_probs_buffer)
                         entropies_tensor = torch.stack(self.entropies_buffer)
                     except RuntimeError as e_stack:
-                        print(f"FEIL learn: RuntimeError under torch.stack: {e_stack}")
+                        print(f"[{self.agent_name}] FEIL learn (stack): {e_stack}")
                         print(
-                            f"  Antall elementer: returns={len(returns)}, values_buffer={len(self.values_buffer)}, log_probs_buffer={len(self.log_probs_buffer)}, entropies_buffer={len(self.entropies_buffer)}")
-                        # Detaljert sjekk av formen på elementene i bufferne hvis feilen vedvarer
-                        if len(self.values_buffer) > 0: print(f"  values_buffer[0] shape: {self.values_buffer[0].shape}")
-                        if len(self.log_probs_buffer) > 0: print(f"  log_probs_buffer[0] shape: {self.log_probs_buffer[0].shape}")
-                        if len(self.entropies_buffer) > 0: print(f"  entropies_buffer[0] shape: {self.entropies_buffer[0].shape}")
+                            f"  R:{len(returns)}, V:{len(self.values_buffer)}, LP:{len(self.log_probs_buffer)}, E:{len(self.entropies_buffer)}")
                         self.clear_buffers()
                         return None, None, None
             
-                    returns_tensor = returns_tensor.to(config.DEVICE)
-                    values_tensor = values_tensor.to(config.DEVICE)
-                    log_probs_tensor = log_probs_tensor.to(config.DEVICE)
-                    entropies_tensor = entropies_tensor.to(config.DEVICE)
-            
-                    # print(f"DEBUG learn: shapes etter stack: R={returns_tensor.shape}, V={values_tensor.shape}, LP={log_probs_tensor.shape}, E={entropies_tensor.shape}")
-            
-                    if values_tensor.numel() == 0 or returns_tensor.numel() == 0 or log_probs_tensor.numel() == 0:
+                    # Nå SKAL alle tensorer ha samme lengde (num_rewards)
+                    if not (returns_tensor.shape[0] == values_tensor.shape[0] == \
+                            log_probs_tensor.shape[0] == entropies_tensor.shape[0] == num_rewards):
+                        print(f"[{self.agent_name}] KRITISK FEIL learn: Tensorstørrelser stemmer ikke etter stack!")
+                        print(
+                            f"  Shape R:{returns_tensor.shape}, V:{values_tensor.shape}, LP:{log_probs_tensor.shape}, E:{entropies_tensor.shape}, Expected:{num_rewards}")
                         self.clear_buffers()
                         return None, None, None
-            
-                    # Sikre at tensorer er minst 1D for .mean() og F.mse_loss
-                    # Dette er normalt håndtert av torch.stack hvis inputlistene ikke er tomme.
-                    # Men en ekstra sjekk hvis en tensor ble 0-dim av en eller annen grunn (f.eks. stack av én 0-dim tensor).
-                    if values_tensor.ndim == 0: values_tensor = values_tensor.unsqueeze(0)
-                    if returns_tensor.ndim == 0: returns_tensor = returns_tensor.unsqueeze(0)
-                    if log_probs_tensor.ndim == 0: log_probs_tensor = log_probs_tensor.unsqueeze(0)
-                    if entropies_tensor.ndim == 0: entropies_tensor = entropies_tensor.unsqueeze(0)
             
                     advantages = returns_tensor - values_tensor
                     if advantages.numel() > 1:
                         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-                    elif advantages.numel() == 0:
-                        self.clear_buffers()
-                        return None, None, None
             
                     policy_loss = (-log_probs_tensor * advantages.detach()).mean()
                     value_loss = F.mse_loss(values_tensor, returns_tensor)
@@ -635,16 +626,14 @@ agents/
                                  config.VALUE_LOSS_COEF * value_loss + \
                                  config.ENTROPY_COEF * entropy_loss
             
-                    # print(f"DEBUG learn: policy_loss={policy_loss.item():.4f}, value_loss={value_loss.item():.4f}, entropy_loss={entropy_loss.item():.4f}, total_loss={total_loss.item():.4f}")
-            
                     self.optimizer.zero_grad()
                     total_loss.backward()
                     if hasattr(config, 'MAX_GRAD_NORM') and config.MAX_GRAD_NORM is not None:
                         torch.nn.utils.clip_grad_norm_(self.network.parameters(), config.MAX_GRAD_NORM)
                     self.optimizer.step()
             
+                    # print(f"[{self.agent_name}] Lært. Losses - P:{policy_loss.item():.3f} V:{value_loss.item():.3f} E:{entropy_loss.item():.3f}")
                     self.clear_buffers()
-            
                     return policy_loss.item(), value_loss.item(), entropy_loss.item()
             
                 def clear_buffers(self):
@@ -652,6 +641,28 @@ agents/
                     self.values_buffer = []
                     self.rewards_buffer = []
                     self.entropies_buffer = []
+            
+                def save_model(self, path_str: str):
+                    path = Path(path_str)
+                    path.parent.mkdir(parents=True, exist_ok=True)  # Sikre at mappen finnes
+                    try:
+                        torch.save(self.network.state_dict(), path)
+                        # print(f"[{self.agent_name}] Modell lagret til {path}")
+                    except Exception as e:
+                        print(f"[{self.agent_name}] Kunne ikke lagre modell til {path}: {e}")
+            
+                def load_model(self, path_str: str):
+                    path = Path(path_str)
+                    if not path.exists():
+                        print(f"[{self.agent_name}] Ingen modell funnet på {path}, starter med ny/tilfeldig initialisert modell.")
+                        return
+            
+                    try:
+                        self.network.load_state_dict(torch.load(path, map_location=torch.device(config.DEVICE)))
+                        self.network.eval()  # Sett til evaluation mode etter lasting
+                        print(f"[{self.agent_name}] Modell lastet fra {path}")
+                    except Exception as e:
+                        print(f"[{self.agent_name}] Kunne ikke laste modell fra {path}: {e}. Bruker ny modell.")
             --- SLUTT INNHOLD (agent.py) ---
 
         |-- config.py
@@ -660,327 +671,485 @@ agents/
             import torch
             
             # ---- Kartdimensjoner og Normalisering ----
-            # Disse bør ideelt sett være dynamiske eller store nok for padding.
-            # game_core.py har et lite 8x4 kart. Vi setter en MAKS forventet størrelse
-            # for CNN input, men utils.py må håndtere mindre kart.
-            MAP_WIDTH = 250
-            MAP_HEIGHT = 250
+            MAP_WIDTH = 250  # Forventet maks bredde for CNN-padding/cropping
+            MAP_HEIGHT = 250 # Forventet maks høyde for CNN-padding/cropping
+            # utils.py vil håndtere faktiske kartstørrelser for normalisering.
             
             MAX_WORM_HEALTH = 100.0
-            # MAX_X_POS og MAX_Y_POS brukes for normalisering i utils.py og bør
-            # reflektere faktiske kartdimensjoner mottatt fra serveren, ikke padding-størrelsen.
             
             # ---- Modell Dimensjoner ----
             CNN_INPUT_CHANNELS = 1
             # Gitt AdaptiveMaxPool2d((6, 6)) og 32 output kanaler fra conv2, blir dette 32*6*6 = 1152
-            CNN_FEATURE_DIM = 1152 # Dette er output etter CNN og pooling, før flattening
+            CNN_FEATURE_DIM = 1152
             
-            # WORM_VECTOR_DIM: Hvilke features skal vi ha for ormene?
-            # For aktiv orm: normalisert health, x, y
-            # For andre ormer (potensielt): health, relativ x, relativ y, er fiende?
-            # Enkel start: Kun egen orms health, x, y (normalisert)
-            ACTIVE_WORM_FEATURE_DIM = 3 # health, x, y
-            # La oss for nå kun fokusere på den aktive ormen.
-            # Hvis vi vil inkludere andre ormer, må WORM_VECTOR_DIM økes.
+            ACTIVE_WORM_FEATURE_DIM = 3  # Egen orms: health, x, y (normalisert)
+            # TODO: Utvid senere til å inkludere info om andre ormer hvis ønskelig
             WORM_VECTOR_DIM = ACTIVE_WORM_FEATURE_DIM
             COMBINED_FEATURE_DIM = CNN_FEATURE_DIM + WORM_VECTOR_DIM
             
-            # ---- Action Space Definisjoner (basert på json-docs.md og internt for nettverket) ----
-            # Dette er rekkefølgen handlingene presenteres for nettverkets output-hode (policy).
-            # Må matche output-laget i model.py og logikken i agent.py.
-            # 'attack_...' er interne navn for nettverket for å skille våpentyper.
+            # ---- Action Space Definisjoner (basert på ny json-docs.md) ----
+            # Rekkefølgen nettverket ser handlingene i:
             NETWORK_ACTION_ORDER = ['stand', 'walk', 'attack_kick', 'attack_bazooka', 'attack_grenade']
-            ACTION_DIM = len(NETWORK_ACTION_ORDER) # Antall diskrete hovedhandlinger for nettverket
+            ACTION_DIM = len(NETWORK_ACTION_ORDER)
             
-            # Mapping fra nettverkets action navn til serverens action format
-            # Brukes i utils.format_action
+            # Mapping fra nettverkets actionnavn til serverens JSON-format
             SERVER_ACTION_MAPPING = {
                 'stand': {'action': 'stand'},
-                'walk': {'action': 'walk'}, # 'dx' parameter legges til dynamisk
-                'attack_kick': {'action': 'attack', 'weapon': 'kick'}, # 'force' parameter legges til
-                'attack_bazooka': {'action': 'attack', 'weapon': 'bazooka'}, # 'angle_deg' parameter
-                'attack_grenade': {'action': 'attack', 'weapon': 'grenade'} # 'angle_deg', 'force' params
+                'walk': {'action': 'walk'},  # 'dx' parameter legges til dynamisk
+                'attack_kick': {'action': 'attack', 'weapon': 'kick'}, # Ingen 'force' fra klient lenger
+                'attack_bazooka': {'action': 'attack', 'weapon': 'bazooka'},  # 'angle_deg' parameter
+                'attack_grenade': {'action': 'attack', 'weapon': 'grenade'}  # 'dx' parameter (erstatter angle/force)
             }
             
             # ---- Parameter Space for Nettverket ----
-            # 'walk' -> 'dx' (diskretiserte bins for nettverket)
-            WALK_DX_BINS = 11 # Gir verdier fra -5 til +5 hvis sentrert rundt 0
-            WALK_DX_MIN = -5.0 # Minste faktiske dx verdi
-            WALK_DX_MAX = 5.0  # Største faktiske dx verdi
+            # Walk 'dx'. Server maks er +/-2.0.
+            WALK_DX_BINS = 5  # Gir f.eks. bins for [-2.0, -1.0, 0.0, 1.0, 2.0]
+            WALK_DX_MIN = -2.0
+            WALK_DX_MAX = 2.0
             
-            # Kontinuerlige parametere (nettverket outputer mean og std for Normalfordeling)
-            # Force (0-100)
-            KICK_FORCE_PARAMS = 1 # Nettverket outputer 1 verdi for mean, 1 for std (totalt 2 nodes)
-            BAZOOKA_ANGLE_PARAMS = 1
-            GRENADE_ANGLE_PARAMS = 1
-            GRENADE_FORCE_PARAMS = 1
+            # Kick: Ingen parametere som predikeres av nettverket (ingen 'force' fra klient).
+            
+            # Bazooka 'angle_deg' (kontinuerlig: nettverket outputer mean og std for Normalfordeling)
+            BAZOOKA_ANGLE_PARAMS = 1 # 1 for mean, 1 for std (totalt 2 noder i modellen for dette)
+            
+            # Grenade 'dx'. Server maks er +/-5.0.
+            GRENADE_DX_BINS = 11 # Gir f.eks. bins for [-5.0, -4.0, ..., 0.0, ..., 4.0, 5.0]
+            GRENADE_DX_MIN = -5.0
+            GRENADE_DX_MAX = 5.0
             
             # ---- A2C Hyperparametre ----
-            LEARNING_RATE = 0.0007
+            LEARNING_RATE = 0.0003 # Ofte en god startverdi for A2C
             GAMMA = 0.99  # Discount factor
             ENTROPY_COEF = 0.01
             VALUE_LOSS_COEF = 0.5
-            MAX_GRAD_NORM = 0.5 # For gradient clipping (valgfritt, men ofte lurt)
+            MAX_GRAD_NORM = 0.5 # For gradient clipping
             
-            # ---- Trening ----
-            NUM_EPISODES = 10000
-            # STEPS_PER_UPDATE = 20 # For N-step A2C, hvis ikke episode-basert
+            # ---- Trening & Lagring ----
+            # Serveren kjører nå kontinuerlig spill. Klienten bør lagre periodisk.
+            # NUM_EPISODES i main_a2c.py styrer hvor mange *spill* hver agent prøver å fullføre
+            # før den potensielt avslutter sin egen økt (men serveren fortsetter).
+            # For kontinuerlig trening kan man sette NUM_EPISODES veldig høyt eller la den kjøre evig.
+            NUM_GAMES_PER_AGENT_SESSION = 10000 # Hvor mange spill en agent-instans skal sikte mot
+            
+            SAVE_MODEL_EVERY_N_GAMES = 50   # Lagre modell etter X antall *fullførte spill* for denne agenten
+            PLOT_STATS_EVERY_N_GAMES = 10   # Hvor ofte generere/oppdatere plot
             
             # ---- Websocket ----
             SERVER_HOST = '127.0.0.1'
             SERVER_PORT = 8765
             
-            # ---- Agent ----
-            PLAYER_ID = None # Vil bli satt av serveren ved 'ASSIGN_ID'
-            
             # ---- Annet ----
             DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-            print(f"Using device: {DEVICE}")
+            # DEVICE = "cpu" # Kan overstyres for debugging
+            print(f"Bruker enhet: {DEVICE}")
             --- SLUTT INNHOLD (config.py) ---
 
         |-- main_a2c.py
             --- START INNHOLD (main_a2c.py) ---
             # agents/a2c_manual/main_a2c.py
+            import os
+            
+            # Prøv å sette denne FØR andre importer for å håndtere OMP-feilen
+            # Dette er en workaround og kan skjule underliggende problemer i sjeldne tilfeller.
+            os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+            
             import asyncio
             import websockets
             import json
-            import time
             import torch
             import numpy as np
-            from .agent import A2CAgent
-            from . import config  # Bruk relativ import
+            import argparse
+            from pathlib import Path
+            import signal
+            import matplotlib
+            
+            matplotlib.use('Agg')  # Bytt til Agg backend FØR pyplot importeres for ikke-interaktiv plotting
+            import matplotlib.pyplot as plt
+            import random  # For random sleep
+            
+            from .agent import A2CAgent  # Relativ import
+            from . import config  # Relativ import
+            
+            # --- Global logging for plotting ---
+            TRAINING_STATS = {}  # {agent_id_str: {"game_rewards": [], "policy_losses": [], ...}}
+            PLOT_DIR = Path(__file__).resolve().parent / "training_plots_output"
+            PLOT_DIR.mkdir(parents=True, exist_ok=True)
+            
+            SHUTDOWN_FLAG = asyncio.Event()
             
             
-            # (Setup logging her hvis du vil, likt som i client.py eller server.py. For enkelhets skyld, print brukes her)
+            def signal_handler_main(signum, frame):
+                if not SHUTDOWN_FLAG.is_set():
+                    print("\n(Hovedkoordinator) Mottok avslutningssignal (Ctrl+C). Setter shutdown flagg...")
+                    SHUTDOWN_FLAG.set()
+                else:
+                    print("(Hovedkoordinator) Avslutningssignal allerede mottatt...")
             
-            async def run_agent():
+            
+            async def run_single_agent_session(agent_id_str: str, checkpoint_filename: str):
                 uri = f"ws://{config.SERVER_HOST}:{config.SERVER_PORT}"
-                a2c_agent = A2CAgent()
-                episode_count = 0
-                all_episode_rewards_log = []  # For plotting
-                losses_log = {'policy': [], 'value': [], 'entropy': []}  # For plotting
+                agent_name = f"A2C_Agent_{agent_id_str}"
+                a2c_agent = A2CAgent(agent_name=agent_name)
             
-                checkpoint_path = "a2c_worms_checkpoint.pth"
-                try:
-                    a2c_agent.network.load_state_dict(torch.load(checkpoint_path, map_location=torch.device(config.DEVICE)))
-                    print(f"Lastet sjekkpunkt for modellen fra {checkpoint_path}.")
-                except FileNotFoundError:
-                    print(f"Ingen sjekkpunkt funnet på {checkpoint_path}, starter med ny modell.")
-                except Exception as e:
-                    print(f"Kunne ikke laste sjekkpunkt: {e}")
+                if agent_id_str not in TRAINING_STATS:
+                    TRAINING_STATS[agent_id_str] = {
+                        "game_rewards_raw": [],  # Belønning for hvert spill
+                        "policy_loss_per_game": [],  # Gj.snitt policy loss for hvert spill
+                        "value_loss_per_game": [],  # Gj.snitt value loss for hvert spill
+                        "entropy_loss_per_game": [],  # Gj.snitt entropy loss for hvert spill
+                        "games_played_count": 0,
+                        "total_steps_across_games": 0
+                    }
             
-                print(f"Starter {config.NUM_EPISODES} episoder med A2C agent...")
+                checkpoint_path = Path(__file__).resolve().parent / checkpoint_filename
+                a2c_agent.load_model(checkpoint_path)
             
-                for episode_idx in range(config.NUM_EPISODES):
-                    episode_reward_sum = 0
-                    # Agentens buffere tømmes i agent.learn() eller agent.clear_buffers()
-                    # a2c_agent.clear_buffers() # Kan kalles her for ekstra sikkerhet
+                connection_attempts = 0
+                max_connection_attempts = 10  # Litt mer tålmodig
             
-                    game_over_flag = False
-                    last_received_state = None  # For å ha state tilgjengelig for learn() hvis tilkobling brytes
+                while not SHUTDOWN_FLAG.is_set() and \
+                        TRAINING_STATS[agent_id_str]["games_played_count"] < config.NUM_GAMES_PER_AGENT_SESSION:
             
-                    print(f"\n--- Starter Episode {episode_idx + 1}/{config.NUM_EPISODES} ---")
+                    # Buffere for ett enkelt spill
+                    temp_policy_losses = []
+                    temp_value_losses = []
+                    temp_entropy_losses = []
+                    current_game_step_rewards = []  # Belønninger for hvert steg i dette spillet
+            
+                    a2c_agent.clear_buffers()  # Sørg for at agentens interne buffere er tomme
+            
+                    current_game_id = None
+                    is_my_turn_flag = False
+                    am_i_eliminated_this_game = False
+                    last_known_state_for_learn = None
+                    steps_this_game = 0
+            
+                    # print(f"[{agent_name}] Venter på nytt spill / prøver å koble til...")
                     try:
-                        async with websockets.connect(uri, ping_interval=20, ping_timeout=20) as websocket:
-                            # 1. CONNECT og ASSIGN_ID
-                            await websocket.send(json.dumps({"type": "CONNECT", "nick": "A2C-JetBot"}))
-                            assign_id_msg_str = await websocket.recv()
+                        async with websockets.connect(uri, ping_interval=20, ping_timeout=30, open_timeout=15) as websocket:
+                            connection_attempts = 0
+                            await websocket.send(json.dumps({"type": "CONNECT", "nick": agent_name}))
+            
+                            assign_id_msg_str = await asyncio.wait_for(websocket.recv(), timeout=10)
                             assign_id_msg = json.loads(assign_id_msg_str)
             
                             if assign_id_msg.get("type") == "ASSIGN_ID":
                                 player_id = assign_id_msg.get("player_id")
                                 if player_id is None:
-                                    print("FEIL: Fikk ikke player_id. Avslutter episoden.")
-                                    await asyncio.sleep(1)  # Vent litt før neste forsøk
-                                    continue  # Neste episode
+                                    print(f"[{agent_name}] FEIL: Fikk ikke player_id. Venter.")
+                                    await asyncio.sleep(random.uniform(3, 7))
+                                    continue
                                 a2c_agent.set_player_id(player_id)
-                                print(f"Tilkoblet server. Tildelt Player ID: {a2c_agent.player_id}.")
                             else:
-                                print(f"FEIL: Forventet ASSIGN_ID, fikk: {assign_id_msg}. Avslutter episoden.")
-                                await asyncio.sleep(1)
+                                print(f"[{agent_name}] FEIL: Forventet ASSIGN_ID, fikk: {assign_id_msg}. Venter.")
+                                await asyncio.sleep(random.uniform(3, 7))
                                 continue
             
-                            # Hoved meldingsløkke for episoden
+                            # print(f"[{agent_name}] Tilkoblet. Min Player ID: {a2c_agent.player_id}.")
+            
                             async for message_str in websocket:
+                                if SHUTDOWN_FLAG.is_set(): break
                                 try:
                                     msg = json.loads(message_str)
                                     msg_type = msg.get("type")
-                                    # print(f"DEBUG: Mottok: {msg_type} - {str(msg)[:150]}") # Kort debug
             
-                                    if msg_type == "TURN_BEGIN":
-                                        last_received_state = msg.get("state")  # Lagre for learn() ved evt. disconnect
-                                        if msg.get("player_id") == a2c_agent.player_id:
-                                            turn_idx = msg.get('turn_index', -1)
-                                            print(f"  Min tur (P{a2c_agent.player_id}, Turn {turn_idx}). State mottatt.")
-                                            if not last_received_state:
-                                                print("  FEIL: TURN_BEGIN mangler 'state'. Hopper over handling.")
-                                                continue
+                                    if msg_type == "NEW_GAME":
+                                        new_game_id = msg.get("game_id")
+                                        # Hvis vi var midt i et spill, og det ikke ble fullført (ingen GAME_OVER/PLAYER_ELIMINATED)
+                                        # og vi har data, prøv å lære fra det (mindre ideelt, men bedre enn ingenting).
+                                        if current_game_id is not None and current_game_id != new_game_id and \
+                                                not am_i_eliminated_this_game and a2c_agent.rewards_buffer:
+                                            print(
+                                                f"[{agent_name}] Uventet NEW_GAME (ID: {new_game_id}) før GAME_OVER for spill {current_game_id}. Prøver å lære fra ufullstendig data.")
+                                            p_l, v_l, e_l = a2c_agent.learn(last_known_state_for_learn, True)  # Anta done=True
+                                            if p_l is not None:
+                                                temp_policy_losses.append(p_l)
+                                                temp_value_losses.append(v_l)
+                                                temp_entropy_losses.append(e_l)
+                                            # Logg dette "ufullstendige" spillet
+                                            TRAINING_STATS[agent_id_str]['game_rewards_raw'].append(sum(current_game_step_rewards))
+                                            if temp_policy_losses: TRAINING_STATS[agent_id_str]['policy_loss_per_game'].append(
+                                                np.mean(temp_policy_losses))
+                                            if temp_value_losses: TRAINING_STATS[agent_id_str]['value_loss_per_game'].append(
+                                                np.mean(temp_value_losses))
+                                            if temp_entropy_losses: TRAINING_STATS[agent_id_str]['entropy_loss_per_game'].append(
+                                                np.mean(temp_entropy_losses))
+                                            TRAINING_STATS[agent_id_str]["games_played_count"] += 1
+                                            TRAINING_STATS[agent_id_str]["total_steps_across_games"] += steps_this_game
             
-                                            action_to_send_obj = a2c_agent.select_action(last_received_state)
-                                            action_payload = {
-                                                "type": "ACTION",
-                                                "player_id": a2c_agent.player_id,
+                                        current_game_id = new_game_id
+                                        # print(f"[{agent_name}] --- Nytt spill (ID: {current_game_id}) for P{a2c_agent.player_id} ---")
+                                        a2c_agent.clear_buffers()
+                                        temp_policy_losses, temp_value_losses, temp_entropy_losses, current_game_step_rewards = [], [], [], []
+                                        am_i_eliminated_this_game = False
+                                        is_my_turn_flag = False
+                                        last_known_state_for_learn = msg.get("state")
+                                        steps_this_game = 0
+            
+                                    elif msg_type == "TURN_BEGIN":
+                                        if current_game_id is None: continue
+            
+                                        game_state_for_action = msg.get("state")
+                                        last_known_state_for_learn = game_state_for_action
+            
+                                        if msg.get("player_id") == a2c_agent.player_id and not am_i_eliminated_this_game:
+                                            is_my_turn_flag = True
+                                            steps_this_game += 1
+                                            if not game_state_for_action:
+                                                action_to_send_obj = {"action": "stand"}
+                                                a2c_agent.values_buffer.append(torch.tensor(0.0, device=config.DEVICE))
+                                            else:
+                                                action_to_send_obj = a2c_agent.select_action(game_state_for_action)
+            
+                                            await websocket.send(json.dumps({
+                                                "type": "ACTION", "player_id": a2c_agent.player_id,
                                                 "action": action_to_send_obj
-                                            }
-                                            print(f"    Sender handling: {action_payload['action']}")
-                                            await websocket.send(json.dumps(action_payload))
-                                        # else: Ikke min tur, ignorer
+                                            }))
+                                        else:
+                                            is_my_turn_flag = False
             
                                     elif msg_type == "TURN_RESULT":
-                                        # Kun lagre reward hvis det var vår handling
-                                        if msg.get("player_id") == a2c_agent.player_id:
+                                        if current_game_id is None: continue
+                                        last_known_state_for_learn = msg.get("state")
+                                        if msg.get("player_id") == a2c_agent.player_id and is_my_turn_flag:
                                             reward = msg.get("reward", 0.0)
                                             a2c_agent.store_reward(reward)
-                                            episode_reward_sum += reward
-                                            print(f"  Mottok reward: {reward}. Total ep. reward: {episode_reward_sum:.2f}")
-                                        last_received_state = msg.get("state")  # Oppdater uansett
+                                            current_game_step_rewards.append(reward)
+                                        is_my_turn_flag = False
             
-                                    elif msg_type == "TURN_END":
-                                        pass  # Vent på neste TURN_BEGIN
+                                    elif msg_type == "PLAYER_ELIMINATED":
+                                        if current_game_id is None: continue
+                                        elim_player_id = msg.get("player_id")
+                                        if elim_player_id == a2c_agent.player_id and not am_i_eliminated_this_game:
+                                            am_i_eliminated_this_game = True
+                                            if a2c_agent.rewards_buffer:  # Bare lær hvis det var noen handlinger
+                                                p_l, v_l, e_l = a2c_agent.learn(last_known_state_for_learn, True)  # done=True
+                                                if p_l is not None:
+                                                    temp_policy_losses.append(p_l)
+                                                    temp_value_losses.append(v_l)
+                                                    temp_entropy_losses.append(e_l)
+                                            else:
+                                                a2c_agent.clear_buffers()
             
                                     elif msg_type == "GAME_OVER":
-                                        print(f"GAME OVER mottatt. Vinner: {msg.get('winner_id')}. ")
-                                        game_over_flag = True
-                                        final_state = msg.get("final_state")
-                                        # Hvis siste handling ikke var vår, har vi ikke en reward for final_state.
-                                        # A2C lærer vanligvis fra (s, a, r, s_next).
-                                        # Hvis det ikke var vår tur sist, er siste reward i buffer fra forrige handling.
-                                        # V(final_state) vil være 0.
+                                        if current_game_id is None: continue
             
-                                        # Sørg for at vi har en state å sende til learn, selv om det var en annen spillers tur sist
-                                        current_state_for_learn = final_state if final_state else last_received_state
+                                        final_state_for_learn = msg.get("final_state")
+                                        if not am_i_eliminated_this_game and a2c_agent.rewards_buffer:
+                                            p_l, v_l, e_l = a2c_agent.learn(final_state_for_learn, True)  # done=True
+                                            if p_l is not None:
+                                                temp_policy_losses.append(p_l)
+                                                temp_value_losses.append(v_l)
+                                                temp_entropy_losses.append(e_l)
+                                        elif not am_i_eliminated_this_game and not a2c_agent.rewards_buffer:
+                                            a2c_agent.clear_buffers()
             
-                                        if not a2c_agent.rewards_buffer:  # Hvis ingen handlinger ble tatt av agenten
-                                            print("  Ingen handlinger/rewards lagret denne episoden. Ingen læring.")
-                                        else:
-                                            pol_l, val_l, ent_l = a2c_agent.learn(current_state_for_learn, True)  # True for done
-                                            if pol_l is not None:
-                                                losses_log['policy'].append(pol_l)
-                                                losses_log['value'].append(val_l)
-                                                losses_log['entropy'].append(ent_l)
-                                                print(
-                                                    f"  Lært fra episode. Losses - P: {pol_l:.4f}, V: {val_l:.4f}, E: {ent_l:.4f}")
-                                        break  # Bryt meldingsløkken, episoden er ferdig
+                                        # Logg statistikk for det fullførte spillet
+                                        TRAINING_STATS[agent_id_str]['game_rewards_raw'].append(sum(current_game_step_rewards))
+                                        if temp_policy_losses: TRAINING_STATS[agent_id_str]['policy_loss_per_game'].append(
+                                            np.mean(temp_policy_losses))
+                                        if temp_value_losses: TRAINING_STATS[agent_id_str]['value_loss_per_game'].append(
+                                            np.mean(temp_value_losses))
+                                        if temp_entropy_losses: TRAINING_STATS[agent_id_str]['entropy_loss_per_game'].append(
+                                            np.mean(temp_entropy_losses))
+            
+                                        TRAINING_STATS[agent_id_str]["games_played_count"] += 1
+                                        TRAINING_STATS[agent_id_str]["total_steps_across_games"] += steps_this_game
+            
+                                        games_count_this_agent = TRAINING_STATS[agent_id_str]["games_played_count"]
+                                        print(
+                                            f"[{agent_name}] Spill {current_game_id} ferdig. Belønning: {sum(current_game_step_rewards):.2f}. (Agent totalt {games_count_this_agent} spill, {steps_this_game} steg i dette spillet)")
+            
+                                        if games_count_this_agent > 0 and games_count_this_agent % config.SAVE_MODEL_EVERY_N_GAMES == 0:
+                                            a2c_agent.save_model(checkpoint_path)
+            
+                                        if games_count_this_agent > 0 and games_count_this_agent % config.PLOT_STATS_EVERY_N_GAMES == 0:
+                                            plot_aggregated_training_results()
+            
+                                        current_game_id = None  # Klar for neste NEW_GAME melding
+            
+                                    elif msg_type == "TURN_END":
+                                        pass
             
                                     elif msg_type == "ERROR":
-                                        print(f"FEIL fra server: {msg.get('msg')}")
-                                        # Vurder å tømme buffere hvis feilen gjør episoden ugyldig
-                                        # a2c_agent.clear_buffers()
+                                        print(f"[{agent_name}] FEIL fra server: {msg.get('msg')}")
             
                                 except json.JSONDecodeError:
-                                    print(f"FEIL: Kunne ikke dekode JSON fra server: {message_str}")
+                                    print(f"[{agent_name}] FEIL: Kunne ikke dekode JSON: {message_str}")
+                                except websockets.exceptions.ConnectionClosed as e_ws_msg:
+                                    print(f"[{agent_name}] Tilkobling lukket (under melding): {e_ws_msg}.")
+                                    break
                                 except Exception as e_inner:
-                                    print(f"FEIL i meldingsløkke: {type(e_inner).__name__} - {e_inner}")
-                                    game_over_flag = True  # Anta episoden er korrupt
-                                    break  # Bryt meldingsløkken
+                                    print(f"[{agent_name}] FEIL i meldingsløkke: {type(e_inner).__name__} - {e_inner}")
+                                    break
             
-                            # Etter meldingsløkken (enten GAME_OVER eller disconnect)
-                            if not game_over_flag and a2c_agent.rewards_buffer:  # Disconnect før GAME_OVER
-                                print("Advarsel: Tilkobling lukket før GAME_OVER, men data samlet. Lærer (antar 'done').")
-                                # Bruk sist kjente state hvis mulig
-                                state_for_learn = last_received_state if last_received_state else {}
-                                pol_l, val_l, ent_l = a2c_agent.learn(state_for_learn, True)
-                                if pol_l is not None:
-                                    losses_log['policy'].append(pol_l);
-                                    losses_log['value'].append(val_l);
-                                    losses_log['entropy'].append(ent_l)
+                        # Håndter disconnect utenom GAME_OVER (hvis data finnes og spillet var i gang)
+                        if current_game_id is not None and not am_i_eliminated_this_game and a2c_agent.rewards_buffer:
+                            print(f"[{agent_name}] Lærer fra ufullstendig spill {current_game_id} pga. disconnect.")
+                            p_l, v_l, e_l = a2c_agent.learn(last_known_state_for_learn, True)
+                            if p_l is not None:
+                                temp_policy_losses.append(p_l)
+                                temp_value_losses.append(v_l)
+                                temp_entropy_losses.append(e_l)
+                            # Logg dette ufullstendige spillet også
+                            TRAINING_STATS[agent_id_str]['game_rewards_raw'].append(sum(current_game_step_rewards))
+                            if temp_policy_losses: TRAINING_STATS[agent_id_str]['policy_loss_per_game'].append(
+                                np.mean(temp_policy_losses))
+                            if temp_value_losses: TRAINING_STATS[agent_id_str]['value_loss_per_game'].append(
+                                np.mean(temp_value_losses))
+                            if temp_entropy_losses: TRAINING_STATS[agent_id_str]['entropy_loss_per_game'].append(
+                                np.mean(temp_entropy_losses))
+                            TRAINING_STATS[agent_id_str]["games_played_count"] += 1
+                            TRAINING_STATS[agent_id_str]["total_steps_across_games"] += steps_this_game
             
-                    except websockets.exceptions.ConnectionClosed as e:
-                        print(f"Tilkobling lukket: {e}. Prøver neste episode.")
-                        if not game_over_flag and a2c_agent.rewards_buffer:  # Lær hvis data finnes
-                            print("  Lærer fra ufullstendig episode (ConnectionClosed).")
-                            state_for_learn = last_received_state if last_received_state else {}
-                            pol_l, val_l, ent_l = a2c_agent.learn(state_for_learn, True)
-                            if pol_l: losses_log['policy'].append(pol_l); losses_log['value'].append(val_l); losses_log[
-                                'entropy'].append(ent_l)
-                    except ConnectionRefusedError:
-                        print(f"FEIL: Kunne ikke koble til server {uri}. Er den startet? Venter 10s.")
-                        await asyncio.sleep(10)
-                        continue  # Prøv å starte en ny episodeforbindelse
-                    except Exception as e_outer:
-                        print(f"Alvorlig FEIL i episode {episode_idx + 1}: {type(e_outer).__name__} - {e_outer}")
-                        if not game_over_flag and a2c_agent.rewards_buffer:
-                            print("  Lærer fra ufullstendig episode (Alvorlig feil).")
-                            state_for_learn = last_received_state if last_received_state else {}
-                            pol_l, val_l, ent_l = a2c_agent.learn(state_for_learn, True)
-                            if pol_l: losses_log['policy'].append(pol_l); losses_log['value'].append(val_l); losses_log[
-                                'entropy'].append(ent_l)
-                        await asyncio.sleep(5)  # Pause før neste forsøk
+                        if SHUTDOWN_FLAG.is_set():
+                            print(f"[{agent_name}] Avslutter økt pga shutdown flagg.")
+                            break
             
-                    all_episode_rewards_log.append(episode_reward_sum)
-                    print(f"--- Episode {episode_idx + 1} avsluttet. Total belønning: {episode_reward_sum:.2f} ---")
-            
-                    # Lagre sjekkpunkt periodisk
-                    if (episode_idx + 1) % 50 == 0:
+                    except (websockets.exceptions.WebSocketException, ConnectionRefusedError, asyncio.TimeoutError) as e_conn:
+                        connection_attempts += 1
+                        wait_time = min(2 ** connection_attempts, 60)
+                        print(f"[{agent_name}] Tilkoblingsfeil ({type(e_conn).__name__}). Prøver igjen om {wait_time}s.")
+                        if connection_attempts >= max_connection_attempts and not SHUTDOWN_FLAG.is_set():
+                            print(f"[{agent_name}] Maks antall tilkoblingsforsøk nådd. Avslutter denne agent-økten.")
+                            SHUTDOWN_FLAG.set()
+                            break
                         try:
-                            torch.save(a2c_agent.network.state_dict(), checkpoint_path)
-                            print(f"Lagret modell sjekkpunkt til {checkpoint_path} etter episode {episode_idx + 1}")
-                        except Exception as e_save:
-                            print(f"Kunne ikke lagre modell: {e_save}")
+                            await asyncio.sleep(wait_time)
+                        except asyncio.CancelledError:
+                            if SHUTDOWN_FLAG.is_set(): break
+                    except Exception as e_outer:
+                        print(
+                            f"[{agent_name}] Alvorlig FEIL (ytre løkke): {type(e_outer).__name__} - {e_outer}. Avslutter agent-økt.")
+                        # import traceback; traceback.print_exc()
+                        SHUTDOWN_FLAG.set()  # Signaliser at noe gikk galt
+                        break
             
-                    # Liten pause mellom episoder for å unngå å hamre serveren
-                    await asyncio.sleep(0.1)
+                print(f"[{agent_name}] Økt ferdig. Totalt {TRAINING_STATS[agent_id_str]['games_played_count']} spill behandlet.")
+                a2c_agent.save_model(checkpoint_path)
             
-                print("\nTrening ferdig etter alle episoder.")
-                # Plotting (samme som før)
+            
+            def plot_aggregated_training_results():
                 try:
-                    import matplotlib.pyplot as plt
-                    avg_rewards = []
-                    if all_episode_rewards_log:
-                        window_size = min(100, len(all_episode_rewards_log))
-                        if window_size > 0:
-                            avg_rewards = [np.mean(all_episode_rewards_log[max(0, i - window_size + 1):i + 1]) for i in
-                                           range(len(all_episode_rewards_log))]
+                    num_agents_with_data = sum(1 for agent_id in TRAINING_STATS if TRAINING_STATS[agent_id]["game_rewards_raw"])
+                    if num_agents_with_data == 0:
+                        print("Ingen data å plotte for noen agenter.")
+                        return
             
-                    plt.figure(figsize=(18, 6))
-                    plt.subplot(1, 3, 1)
-                    plt.plot(all_episode_rewards_log, label='Rå belønning', alpha=0.6)
-                    if avg_rewards: plt.plot(avg_rewards, label=f'Glidende gj.snitt ({window_size} ep)', color='red', linewidth=2)
-                    plt.xlabel("Episode");
-                    plt.ylabel("Total belønning");
-                    plt.title("Belønning per episode")
-                    plt.legend();
-                    plt.grid(True)
+                    # Dynamisk bestem antall rader for subplots
+                    num_plot_rows = 0
+                    for agent_id_str in TRAINING_STATS:
+                        if TRAINING_STATS[agent_id_str]["game_rewards_raw"]:  # Bare tell agenter med data
+                            num_plot_rows += 1
+                    if num_plot_rows == 0: return  # Ingen data å plotte
             
-                    if losses_log['policy']:  # Sjekk om det er noe å plotte
-                        plt.subplot(1, 3, 2)
-                        plt.plot(losses_log['policy'], label='Policy Loss')
-                        plt.xlabel("Læringssteg");
-                        plt.ylabel("Policy Loss");
-                        plt.title("Policy (Actor) Tap")
-                        plt.legend();
-                        plt.grid(True)
+                    fig, axs = plt.subplots(num_plot_rows, 3, figsize=(20, 6 * num_plot_rows), squeeze=False)
+                    current_plot_row = 0
             
-                        plt.subplot(1, 3, 3)
-                        plt.plot(losses_log['value'], label='Value Loss', color='green')
-                        plt.xlabel("Læringssteg");
-                        plt.ylabel("Value Loss");
-                        plt.title("Value (Critic) Tap")
-                        plt.legend();
-                        plt.grid(True)
+                    for agent_id_str, stats in TRAINING_STATS.items():
+                        if not stats["game_rewards_raw"]:
+                            continue
             
-                    # Du kan også plotte entropi hvis du vil:
-                    # if losses_log['entropy']:
-                    #     plt.figure() # Ny figur for entropi
-                    #     plt.plot(losses_log['entropy'], label='Entropy (neg)')
-                    #     plt.xlabel("Læringssteg"); plt.ylabel("Entropy (neg)"); plt.title("Entropi")
-                    #     plt.legend(); plt.grid(True)
+                        # Rewards
+                        rewards_raw = stats["game_rewards_raw"]
+                        policy_losses_pg = stats.get('policy_loss_per_game', [])
+                        value_losses_pg = stats.get('value_loss_per_game', [])
             
-                    plt.tight_layout()
-                    plt.savefig("training_plots_worms_a2c_new_protocol.png")
-                    print("Lagret treningsplot som training_plots_worms_a2c_new_protocol.png")
-                    # plt.show() # Kommenter ut hvis du kjører uten GUI
+                        axs[current_plot_row, 0].cla()
+                        axs[current_plot_row, 0].plot(rewards_raw, label='Belønning per spill', alpha=0.7, linestyle='-',
+                                                      marker='.', markersize=3)
+                        if len(rewards_raw) >= 10:
+                            window = min(max(10, len(rewards_raw) // 10), 100)
+                            avg_rewards = np.convolve(rewards_raw, np.ones(window) / window, mode='valid')
+                            axs[current_plot_row, 0].plot(np.arange(window - 1, len(rewards_raw)), avg_rewards,
+                                                          label=f'Gj.snitt ({window} spill)', color='red', lw=2)
+                        axs[current_plot_row, 0].set_title(f"Agent {agent_id_str} - Belønning")
+                        axs[current_plot_row, 0].set_xlabel("Spill #");
+                        axs[current_plot_row, 0].set_ylabel("Total Belønning")
+                        axs[current_plot_row, 0].legend();
+                        axs[current_plot_row, 0].grid(True)
+            
+                        # Policy Loss
+                        axs[current_plot_row, 1].cla()
+                        if policy_losses_pg: axs[current_plot_row, 1].plot(policy_losses_pg, label='Policy Loss', marker='.',
+                                                                           markersize=3)
+                        axs[current_plot_row, 1].set_title(f"Agent {agent_id_str} - Policy Tap (per spill)")
+                        axs[current_plot_row, 1].set_xlabel("Spill #");
+                        axs[current_plot_row, 1].set_ylabel("Gj.snitt Policy Tap")
+                        axs[current_plot_row, 1].legend();
+                        axs[current_plot_row, 1].grid(True)
+            
+                        # Value Loss
+                        axs[current_plot_row, 2].cla()
+                        if value_losses_pg: axs[current_plot_row, 2].plot(value_losses_pg, label='Value Loss', color='green',
+                                                                          marker='.', markersize=3)
+                        axs[current_plot_row, 2].set_title(f"Agent {agent_id_str} - Value Tap (per spill)")
+                        axs[current_plot_row, 2].set_xlabel("Spill #");
+                        axs[current_plot_row, 2].set_ylabel("Gj.snitt Value Tap")
+                        axs[current_plot_row, 2].legend();
+                        axs[current_plot_row, 2].grid(True)
+            
+                        current_plot_row += 1
+            
+                    plt.tight_layout(pad=2.5)  # Juster padding
+                    plot_filename = PLOT_DIR / f"aggregated_training_plots_a2c_game_avg.png"
+                    plt.savefig(plot_filename)
+                    print(f"Lagret/oppdatert aggregert treningsplot: {plot_filename}")
+                    plt.close(fig)
+            
                 except ImportError:
                     print("Matplotlib ikke installert. Kan ikke plotte resultater.")
                 except Exception as plot_e:
                     print(f"Kunne ikke plotte resultater: {type(plot_e).__name__} - {plot_e}")
+                    # import traceback; traceback.print_exc()
+            
+            
+            async def main_coordinator():
+                parser = argparse.ArgumentParser(description="Kjør A2C agenter for W.O.R.M.S.")
+                parser.add_argument("--num_agents", type=int, default=1, choices=[1, 2],
+                                    help="Antall agenter å kjøre (1 eller 2). Server må støtte dette.")
+                args = parser.parse_args()
+            
+                signal.signal(signal.SIGINT, signal_handler_main)
+                signal.signal(signal.SIGTERM, signal_handler_main)
+            
+                tasks = []
+                if args.num_agents >= 1:
+                    print("(Koordinator) Forbereder Agent 1...")
+                    tasks.append(asyncio.create_task(run_single_agent_session(
+                        agent_id_str="1",
+                        checkpoint_filename="a2c_worms_agent1_checkpoint.pth"
+                    )))
+                if args.num_agents == 2:
+                    print("(Koordinator) Forbereder Agent 2...")
+                    # Ingen sleep her, la dem starte så samtidig som mulig
+                    tasks.append(asyncio.create_task(run_single_agent_session(
+                        agent_id_str="2",
+                        checkpoint_filename="a2c_worms_agent2_checkpoint.pth"
+                    )))
+            
+                if not tasks:
+                    print("Ingen agenter spesifisert.")
+                    return
+            
+                print(f"(Koordinator) Starter {len(tasks)} agent-økt(er)...")
+                try:
+                    await asyncio.gather(*tasks)
+                except asyncio.CancelledError:
+                    print("(Koordinator) Hovedoppgave (gather) kansellert.")
+            
+                print("\n(Koordinator) Alle agent-økter er avsluttet eller avbrutt.")
+                print("(Koordinator) Genererer endelige plott...")
+                plot_aggregated_training_results()
+                print("(Koordinator) Programmet avsluttes.")
             
             
             if __name__ == "__main__":
                 try:
-                    asyncio.run(run_agent())
+                    asyncio.run(main_coordinator())
                 except KeyboardInterrupt:
-                    print("\nTrening avbrutt av bruker.")
+                    print("\n(Hovedprogram) KeyboardInterrupt fanget helt på slutten. Avslutter.")
+                    SHUTDOWN_FLAG.set()
             --- SLUTT INNHOLD (main_a2c.py) ---
 
         |-- model.py
@@ -989,7 +1158,7 @@ agents/
             import torch
             import torch.nn as nn
             import torch.nn.functional as F
-            from . import config  # Bruk relativ import
+            from . import config
             
             
             class ActorCriticNetwork(nn.Module):
@@ -999,56 +1168,49 @@ agents/
                     # --- CNN for Map Processing ---
                     self.conv1 = nn.Conv2d(config.CNN_INPUT_CHANNELS, 16, kernel_size=8, stride=4)
                     self.conv2 = nn.Conv2d(16, 32, kernel_size=4, stride=2)
-                    self.pool = nn.AdaptiveMaxPool2d((6, 6))  # Sikrer fast output-størrelse: [B, 32, 6, 6]
-                    # config.CNN_FEATURE_DIM er satt til 1152 (32*6*6)
+                    self.pool = nn.AdaptiveMaxPool2d((6, 6))
+                    # CNN_FEATURE_DIM forblir 32*6*6 = 1152
             
                     # --- Felles Fullt Tilkoblede Lag ---
                     self.fc_shared1 = nn.Linear(config.CNN_FEATURE_DIM + config.WORM_VECTOR_DIM, 256)
                     self.fc_shared2 = nn.Linear(256, 128)
             
                     # --- Actor Hoder ---
-                    # 1. Hode for diskret action type (basert på config.NETWORK_ACTION_ORDER)
-                    self.action_type_head = nn.Linear(128, config.ACTION_DIM)  # ACTION_DIM = len(NETWORK_ACTION_ORDER)
+                    # 1. Hode for diskret action type
+                    self.action_type_head = nn.Linear(128, config.ACTION_DIM)
             
                     # 2. Parameterhoder
                     # Walk 'dx' (logits for diskrete bins)
                     self.walk_dx_head = nn.Linear(128, config.WALK_DX_BINS)
             
-                    # Kick 'force' (mean og log_std for Normalfordeling)
-                    self.kick_force_mean_head = nn.Linear(128, config.KICK_FORCE_PARAMS)
-                    self.kick_force_log_std_head = nn.Linear(128, config.KICK_FORCE_PARAMS)
+                    # Kick: Ingen parameterhoder, da 'force' ikke lenger sendes fra klienten.
             
-                    # Bazooka 'angle_deg' (mean og log_std)
+                    # Bazooka 'angle_deg' (mean og log_std for Normalfordeling)
                     self.bazooka_angle_mean_head = nn.Linear(128, config.BAZOOKA_ANGLE_PARAMS)
                     self.bazooka_angle_log_std_head = nn.Linear(128, config.BAZOOKA_ANGLE_PARAMS)
-                    # Ingen force for bazooka ifølge json-docs.md
             
-                    # Grenade 'angle_deg' (mean og log_std)
-                    self.grenade_angle_mean_head = nn.Linear(128, config.GRENADE_ANGLE_PARAMS)
-                    self.grenade_angle_log_std_head = nn.Linear(128, config.GRENADE_ANGLE_PARAMS)
-                    # Grenade 'force' (mean og log_std)
-                    self.grenade_force_mean_head = nn.Linear(128, config.GRENADE_FORCE_PARAMS)
-                    self.grenade_force_log_std_head = nn.Linear(128, config.GRENADE_FORCE_PARAMS)
+                    # Grenade 'dx' (logits for diskrete bins)
+                    self.grenade_dx_head = nn.Linear(128, config.GRENADE_DX_BINS)
             
                     # --- Critic Hode ---
-                    self.value_head = nn.Linear(128, 1)  # Outputter state value V(s)
+                    self.value_head = nn.Linear(128, 1)
             
                 def forward(self, map_tensor, worm_vector_tensor):
                     # CNN
                     x_map = F.relu(self.conv1(map_tensor))
                     x_map = F.relu(self.conv2(x_map))
                     x_map = self.pool(x_map)
-                    x_map = x_map.view(x_map.size(0), -1)  # Flatten til [BatchSize, CNN_FEATURE_DIM]
+                    x_map = x_map.view(x_map.size(0), -1)  # Flatten
             
                     # Kombiner med worm data
-                    if worm_vector_tensor.dim() == 1:  # Hvis batch size = 1 og worm_vector ikke har batch dim
+                    if worm_vector_tensor.dim() == 1:
                         worm_vector_tensor = worm_vector_tensor.unsqueeze(0)
             
                     try:
                         x_combined = torch.cat((x_map, worm_vector_tensor), dim=1)
                     except RuntimeError as e:
                         print(f"FEIL ved torch.cat: map_shape={x_map.shape}, worm_shape={worm_vector_tensor.shape}")
-                        print(f"Forventet worm_vector_dim: {config.WORM_VECTOR_DIM}, CNN_feature_dim: {config.CNN_FEATURE_DIM}")
+                        print(f"Forventet map flat dim: {config.CNN_FEATURE_DIM}, worm_vector_dim: {config.WORM_VECTOR_DIM}")
                         raise e
             
                     # Felles lag
@@ -1059,34 +1221,25 @@ agents/
                     action_type_logits = self.action_type_head(x_shared)
                     action_type_probs = F.softmax(action_type_logits, dim=-1)
             
-                    # Walk
+                    # Walk dx (logits for bins)
                     walk_dx_logits = self.walk_dx_head(x_shared)
                     walk_dx_probs = F.softmax(walk_dx_logits, dim=-1)
             
-                    # Kick
-                    kick_force_mean = self.kick_force_mean_head(x_shared)
-                    kick_force_log_std = self.kick_force_log_std_head(x_shared)
-                    kick_force_std = torch.exp(kick_force_log_std.clamp(-20, 2))  # Stabilitet
-            
-                    # Bazooka
+                    # Bazooka angle (mean, std for Normal dist)
                     bazooka_angle_mean = self.bazooka_angle_mean_head(x_shared)
                     bazooka_angle_log_std = self.bazooka_angle_log_std_head(x_shared)
-                    bazooka_angle_std = torch.exp(bazooka_angle_log_std.clamp(-20, 2))
+                    bazooka_angle_std = torch.exp(bazooka_angle_log_std.clamp(-20, 2)) # Klem for stabilitet
             
-                    # Grenade
-                    grenade_angle_mean = self.grenade_angle_mean_head(x_shared)
-                    grenade_angle_log_std = self.grenade_angle_log_std_head(x_shared)
-                    grenade_angle_std = torch.exp(grenade_angle_log_std.clamp(-20, 2))
-                    grenade_force_mean = self.grenade_force_mean_head(x_shared)
-                    grenade_force_log_std = self.grenade_force_log_std_head(x_shared)
-                    grenade_force_std = torch.exp(grenade_force_log_std.clamp(-20, 2))
+                    # Grenade dx (logits for bins)
+                    grenade_dx_logits = self.grenade_dx_head(x_shared)
+                    grenade_dx_probs = F.softmax(grenade_dx_logits, dim=-1)
             
                     actor_outputs = {
                         'action_type_probs': action_type_probs,
                         'walk_dx_probs': walk_dx_probs,
-                        'kick_params': (kick_force_mean, kick_force_std),
-                        'bazooka_params': (bazooka_angle_mean, bazooka_angle_std),  # Kun angle
-                        'grenade_params': (grenade_angle_mean, grenade_angle_std, grenade_force_mean, grenade_force_std)
+                        # Kick har ingen parametere som predikeres av nettverket
+                        'bazooka_params': (bazooka_angle_mean, bazooka_angle_std),
+                        'grenade_dx_probs': grenade_dx_probs,
                     }
             
                     # --- Critic Output ---
@@ -1109,8 +1262,6 @@ agents/
                 Returnerer en tuple: (map_tensor, worm_vector_tensor)
                 """
                 try:
-                    # `current_game_state_json` er nå det som var `new-environment` før,
-                    # dvs. direkte innholdet i `msg['state']`.
                     map_data = current_game_state_json['map']
                     worms_data = current_game_state_json['worms']
             
@@ -1118,17 +1269,16 @@ agents/
                     map_array = np.array(map_data, dtype=np.float32)
                     actual_map_h, actual_map_w = map_array.shape
             
-                    # Padding/Cropping for å matche config.MAP_HEIGHT, config.MAP_WIDTH
+                    # Senter-justert padding/cropping til config.MAP_HEIGHT, config.MAP_WIDTH
                     processed_map_array = np.zeros((config.MAP_HEIGHT, config.MAP_WIDTH), dtype=np.float32)
             
                     copy_h_len = min(actual_map_h, config.MAP_HEIGHT)
-                    copy_w_len = min(actual_map_w, config.MAP_WIDTH)
+                    src_start_h = max(0, (actual_map_h - copy_h_len) // 2)
+                    dst_start_h = max(0, (config.MAP_HEIGHT - copy_h_len) // 2)
             
-                    # Senter-justert padding/cropping
-                    src_start_h = (actual_map_h - copy_h_len) // 2
-                    src_start_w = (actual_map_w - copy_w_len) // 2
-                    dst_start_h = (config.MAP_HEIGHT - copy_h_len) // 2
-                    dst_start_w = (config.MAP_WIDTH - copy_w_len) // 2
+                    copy_w_len = min(actual_map_w, config.MAP_WIDTH)
+                    src_start_w = max(0, (actual_map_w - copy_w_len) // 2)
+                    dst_start_w = max(0, (config.MAP_WIDTH - copy_w_len) // 2)
             
                     processed_map_array[dst_start_h: dst_start_h + copy_h_len,
                     dst_start_w: dst_start_w + copy_w_len] = \
@@ -1138,235 +1288,366 @@ agents/
                     map_tensor = torch.from_numpy(processed_map_array).unsqueeze(0).unsqueeze(0).to(config.DEVICE)
             
                     # --- Worm Data Preprocessing ---
-                    active_worm_features = [0.0] * config.ACTIVE_WORM_FEATURE_DIM  # Default til null-vektor
+                    active_worm_features = [0.0] * config.ACTIVE_WORM_FEATURE_DIM
+                    my_worm_json_id = agent_player_id - 1  # Server player_id er 1-basert, JSON orm id er 0-basert
             
-                    # agent_player_id er 1-basert. Orm ID i JSON er 0-basert.
-                    my_worm_json_id = agent_player_id - 1
-            
-                    found_my_worm = False
+                    my_worm_alive = False
                     for worm_info in worms_data:
                         if worm_info['id'] == my_worm_json_id:
-                            # Normaliser aktiv orm data
-                            # Bruk faktiske kartdimensjoner for normalisering av posisjon
-                            norm_health = worm_info['health'] / config.MAX_WORM_HEALTH
-                            # Klipp x og y for å unngå verdier utenfor [0,1] ved kanten av kartet
-                            norm_x = np.clip(worm_info['x'] / float(actual_map_w - 1 if actual_map_w > 1 else 1), 0.0, 1.0)
-                            norm_y = np.clip(worm_info['y'] / float(actual_map_h - 1 if actual_map_h > 1 else 1), 0.0, 1.0)
+                            if worm_info['health'] > 0:
+                                norm_health = worm_info['health'] / config.MAX_WORM_HEALTH
+                                # Normaliser x og y basert på *faktiske* kartdimensjoner for korrekthet
+                                norm_x = np.clip(worm_info['x'] / float(actual_map_w - 1 if actual_map_w > 1 else 1.0), 0.0, 1.0)
+                                norm_y = np.clip(worm_info['y'] / float(actual_map_h - 1 if actual_map_h > 1 else 1.0), 0.0, 1.0)
             
-                            active_worm_features = [
-                                np.clip(norm_health, 0.0, 1.0),
-                                norm_x,
-                                norm_y
-                            ]
-                            found_my_worm = True
-                            break
+                                active_worm_features = [np.clip(norm_health, 0, 1), norm_x, norm_y]
+                                my_worm_alive = True
+                            break  # Funnet vår orm (død eller levende), ikke nødvendig å lete mer
             
-                    if not found_my_worm:
-                        # Dette kan skje hvis ormen er død og fjernet fra listen,
-                        # eller hvis det er en feil i player_id matching.
-                        # Agenten bør fortsatt få en input.
-                        # print(f"Advarsel: Fant ikke orm data for agent player_id {agent_player_id} (intern id {my_worm_json_id})")
-                        pass  # Bruker default null-vektor
+                    # if not my_worm_alive:
+                    #     print(f"Advarsel preprocess_state: Fant ikke levende orm data for P{agent_player_id} (JSON id {my_worm_json_id}). Bruker null-vektor.")
             
                     worm_vector_tensor = torch.FloatTensor([active_worm_features]).to(config.DEVICE)
-            
                     return map_tensor, worm_vector_tensor
             
                 except KeyError as e:
                     print(
-                        f"FEIL i preprocess_state: Manglende nøkkel '{e}' i game_state_json: {str(current_game_state_json)[:200]}...")
+                        f"FEIL preprocess_state: Manglende nøkkel '{e}' i game_state_json: {str(current_game_state_json)[:200]}...")
+                    # Returner dummy-tensorer for å unngå krasj, men dette indikerer et problem.
                     dummy_map = torch.zeros(1, config.CNN_INPUT_CHANNELS, config.MAP_HEIGHT, config.MAP_WIDTH).to(config.DEVICE)
                     dummy_worm = torch.zeros(1, config.WORM_VECTOR_DIM).to(config.DEVICE)
                     return dummy_map, dummy_worm
                 except Exception as e:
-                    print(
-                        f"Uventet FEIL i preprocess_state: {type(e).__name__} - {e} med data {str(current_game_state_json)[:200]}...")
+                    print(f"Uventet FEIL preprocess_state: {type(e).__name__} - {e} data: {str(current_game_state_json)[:200]}...")
                     dummy_map = torch.zeros(1, config.CNN_INPUT_CHANNELS, config.MAP_HEIGHT, config.MAP_WIDTH).to(config.DEVICE)
                     dummy_worm = torch.zeros(1, config.WORM_VECTOR_DIM).to(config.DEVICE)
                     return dummy_map, dummy_worm
             
             
+            def _convert_bin_to_value(bin_idx, num_bins, min_val, max_val):
+                """ Hjelpefunksjon for å konvertere en bin-indeks til en faktisk verdi. """
+                if num_bins <= 1:  # Unngå divisjon med null hvis num_bins er 0 eller 1
+                    return (min_val + max_val) / 2.0
+                value = min_val + bin_idx * ((max_val - min_val) / float(num_bins - 1))
+                return np.clip(value, min_val, max_val)
+            
+            
             def format_action(network_action_idx, params_from_network):
                 """
-                Formaterer valgt handling (fra nettverkets interne representasjon) og parametere
-                til JSON-formatet som serveren forventer (basert på json-docs.md).
-            
-                Args:
-                    network_action_idx (int): Indeksen til handlingen i config.NETWORK_ACTION_ORDER.
-                    params_from_network (dict): En dictionary med samplede parametere fra nettverket.
-                                                Nøklene bør matche det agent.py legger inn,
-                                                f.eks. 'walk_dx_bin_idx', 'kick_force_val', etc.
+                Formaterer valgt handling og parametere til JSON-formatet serveren forventer.
                 """
                 network_action_name = config.NETWORK_ACTION_ORDER[network_action_idx]
             
-                # Start med basis action type fra mapping
                 if network_action_name not in config.SERVER_ACTION_MAPPING:
-                    print(f"FEIL: Ukjent nettverkshandling '{network_action_name}' i format_action. Sender 'stand'.")
+                    print(f"FEIL format_action: Ukjent nettverkshandling '{network_action_name}'. Sender 'stand'.")
                     return {"action": "stand"}
             
-                action_json = config.SERVER_ACTION_MAPPING[network_action_name].copy()  # Viktig med .copy()
+                action_json = config.SERVER_ACTION_MAPPING[network_action_name].copy()
             
-                # Legg til/modifiser parametere basert på nettverkets output
                 if network_action_name == 'walk':
-                    # Konverter bin-indeks for dx tilbake til en faktisk dx-verdi
-                    # Eks: 11 bins (-5 til +5). Bin 0 -> -5, Bin 5 -> 0, Bin 10 -> +5
-                    # Formel: verdi = min_verdi + bin_idx * ( (max_verdi - min_verdi) / (antall_bins - 1) )
-                    # Eller enklere: (bin_idx - (antall_bins // 2)) * step_size, hvis step_size er 1.
-                    dx_bin_idx = params_from_network.get('walk_dx_bin_idx', config.WALK_DX_BINS // 2)  # Default til midten (0)
-                    dx_value = config.WALK_DX_MIN + dx_bin_idx * \
-                               ((config.WALK_DX_MAX - config.WALK_DX_MIN) / (config.WALK_DX_BINS - 1))
-                    action_json['dx'] = float(dx_value)
+                    dx_bin_idx = params_from_network.get('walk_dx_bin_idx', config.WALK_DX_BINS // 2)
+                    dx_value = _convert_bin_to_value(dx_bin_idx, config.WALK_DX_BINS, config.WALK_DX_MIN, config.WALK_DX_MAX)
+                    action_json['dx'] = float(np.clip(dx_value, -2.0, 2.0))  # Server klipper til +/-2.0
             
                 elif network_action_name == 'attack_kick':
-                    # Force er 0-100
-                    force_val = params_from_network.get('kick_force_val', 50.0)  # Default til 50
-                    action_json['force'] = float(np.clip(force_val, 0.0, 100.0))
+                    # Ingen 'force' parameter fra klienten lenger
+                    pass
             
                 elif network_action_name == 'attack_bazooka':
-                    angle_val = params_from_network.get('bazooka_angle_val', 0.0)  # Default til 0
+                    angle_val = params_from_network.get('bazooka_angle_val', 0.0)
                     action_json['angle_deg'] = float(angle_val)
-                    # Merk: Bazooka har ikke 'force' i json-docs.md ACTION, kun i client.py eksempelet.
-                    # Hvis serveren forventer det, må det legges til i json-docs og her.
+                    # Ingen 'force' for bazooka
             
                 elif network_action_name == 'attack_grenade':
-                    angle_val = params_from_network.get('grenade_angle_val', 0.0)
-                    action_json['angle_deg'] = float(angle_val)
-                    force_val = params_from_network.get('grenade_force_val', 50.0)
-                    action_json['force'] = float(np.clip(force_val, 0.0, 100.0))
-            
-                # 'stand' trenger ingen ekstra parametere utover det som er i SERVER_ACTION_MAPPING
+                    # Bruker nå 'dx' for grenade
+                    dx_bin_idx = params_from_network.get('grenade_dx_bin_idx', config.GRENADE_DX_BINS // 2)
+                    dx_value = _convert_bin_to_value(dx_bin_idx, config.GRENADE_DX_BINS, config.GRENADE_DX_MIN,
+                                                     config.GRENADE_DX_MAX)
+                    action_json['dx'] = float(np.clip(dx_value, -5.0, 5.0))  # Server klipper til +/-5.0
             
                 return action_json
             --- SLUTT INNHOLD (utils.py) ---
 
+        training_plots_output/
 environment/
     |-- game_core.py
         --- START INNHOLD (game_core.py) ---
-        # environment/game_core.py
+        # File: environment/game_core.py
         
         import copy
+        import json
         import logging
-        from typing import Any, Dict, Tuple
+        import math
+        import random
+        from pathlib import Path
+        from typing import Any, Dict, List, Tuple
         
         logger = logging.getLogger(__name__)
         
+        # tweakable constants
+        WALK_MAX_SPEED = 2.0
+        
+        KICK_RANGE = 1.0
+        KICK_DAMAGE = 80.0
+        
+        BAZOOKA_STEP_SIZE = 0.1
+        BAZOOKA_MAX_RANGE = 10.0
+        BAZOOKA_DAMAGE = 60.0
+        BAZOOKA_HIT_RADIUS = 0.5
+        
+        GRENADE_MAX_THROW = 5.0
+        GRENADE_STEP_SIZE = 0.1
+        GRENADE_DAMAGE = 30.0
+        GRENADE_HIT_RADIUS = 0.5
+        
         class GameCore:
-            def __init__(self) -> None:
+            def __init__(self, expected_players: int = 2) -> None:
+                self.expected = expected_players
+                self.map = self._load_random_map()
                 self.state: Dict[str, Any] = self.initial_state()
         
-            def initial_state(self) -> Dict[str, Any]:
-                return {
-                    "worms": [
-                        {"id": 0, "health": 100, "x": 3.20, "y": 1.75},
-                        {"id": 1, "health": 100, "x": 6.00, "y": 2.00},
-                    ],
-                    "map": [
-                        [1, 0, 0, 0, 0, 0, 0, 0],
-                        [1, 0, 0, 0, 0, 0, 0, 0],
-                        [1, 1, 1, 0, 0, 0, 1, 0],
-                        [1, 1, 1, 0, 0, 1, 1, 1],
-                    ],
-                }
+            def _load_random_map(self) -> List[List[int]]:
+                maps_dir = Path(__file__).resolve().parent / "maps"
+                files = list(maps_dir.glob("*.json"))
+                if not files:
+                    raise FileNotFoundError(f"No map files found in {maps_dir!r}")
+                choice = random.choice(files)
+                with open(choice, "r") as f:
+                    data = json.load(f)
+                width = len(data[0])
+                if any(len(row) != width for row in data):
+                    raise ValueError(f"Map {choice.name} is not rectangular")
+                return data  # type: ignore
         
             def expected_players(self) -> int:
-                return 2
+                return self.expected
         
-            def step(self, player_id: int, action: Dict[str, Any]) -> Tuple[Dict[str, Any], float]:
-                logger.trace("GameCore.step: player_id=%d action=%r", player_id, action)
+            def initial_state(self) -> Dict[str, Any]:
+                floor = []
+                rows = len(self.map)
+                cols = len(self.map[0])
+                for r in range(1, rows):
+                    for c in range(cols):
+                        if self.map[r][c] == 1 and self.map[r - 1][c] == 0:
+                            floor.append((r, c))
+        
+                if len(floor) < self.expected:
+                    raise ValueError(f"Not enough floor tiles ({len(floor)}) for {self.expected} players")
+        
+                chosen = random.sample(floor, self.expected)
+                worms = []
+                for pid, (r, c) in enumerate(chosen):
+                    x = c + 0.5
+                    y = float(r) - 0.25
+                    worms.append({"id": pid, "health": 100, "x": x, "y": y})
+        
+                return {"worms": worms, "map": copy.deepcopy(self.map)}
+        
+            def step(
+                self, player_id: int, action: Dict[str, Any]
+            ) -> Tuple[Dict[str, Any], float, Dict[str, Any]]:
                 state = self.state
                 worms = state["worms"]
-                grid = state["map"]
-                rows = len(grid)
-                cols = len(grid[0])
-        
                 idx = player_id - 1
                 worm = worms[idx]
+                effects: Dict[str, Any] = {}
         
                 if action.get("action") == "walk":
                     dx = float(action.get("dx", 0.0))
+                    dx = max(-WALK_MAX_SPEED, min(dx, WALK_MAX_SPEED))
                     new_x = worm["x"] + dx
-                    new_x = max(0.0, min(new_x, cols - 1e-6))
-                    ty = int(worm["y"])
-                    tx = int(new_x)
-                    if 0 <= ty < rows and grid[ty][tx] == 0:
-                        worm["x"] = new_x
+                    worm["x"] = max(0.0, min(new_x, len(self.map[0]) - 0.01))
+                    col = int(math.floor(worm["x"]))
+                    height = len(self.map)
+                    OFFSET = 0.25
+                    row_here = int(math.floor(worm["y"]))
+                    if 0 <= row_here < height and self.map[row_here][col] == 1:
+                        worm["y"] = float(row_here) - OFFSET
+                    else:
+                        for row in range(row_here + 1, height):
+                            if self.map[row][col] == 1:
+                                worm["y"] = float(row) - OFFSET
+                                break
+                        else:
+                            worm["y"] = float(height)
+                            worm["health"] = 0
+                    return copy.deepcopy(state), 0.0, effects
         
-                return copy.deepcopy(state), 0.0
+                if action.get("action") == "attack":
+                    damage_total = 0.0
+                    kill_bonus = 0.0
+                    weapon = action.get("weapon")
+                    effects = {"weapon": weapon, "trajectory": []}
         
-            def game_over(self) -> bool:
-                return False
+                    # ─── Kick ──────────────────────────────────────────────────────────
+                    if weapon == "kick":
+                        for other in worms:
+                            if other["id"] == worm["id"] or other["health"] <= 0:
+                                continue
+                            dist = math.hypot(other["x"] - worm["x"], other["y"] - worm["y"])
+                            if dist <= KICK_RANGE:
+                                old_hp = other["health"]
+                                new_hp = max(0.0, old_hp - KICK_DAMAGE)
+                                actual_damage = old_hp - new_hp
+                                other["health"] = new_hp
+                                damage_total += actual_damage
+                                if new_hp == 0.0:
+                                    kill_bonus += 100.0
+                                effects["impact"] = {"x": other["x"], "y": other["y"]}
+                                break
+                        return copy.deepcopy(state), damage_total + kill_bonus, effects
         
-            def final_info(self) -> Dict[str, Any]:
-                return {"winner_id": 0, "final_state": self.state}
+                    # ─── Bazooka ───────────────────────────────────────────────────────
+                    elif weapon == "bazooka":
+                        angle = math.radians(float(action.get("angle_deg", 0.0)))
+                        dx_unit, dy_unit = math.cos(angle), -math.sin(angle)
+                        x0, y0 = worm["x"], worm["y"]
+                        t = BAZOOKA_STEP_SIZE
+                        effects["impact"] = {}
+                        while t <= BAZOOKA_MAX_RANGE:
+                            x_proj = x0 + dx_unit * t
+                            y_proj = y0 + dy_unit * t
+                            effects["trajectory"].append({"x": x_proj, "y": y_proj})
+                            tx, ty = int(math.floor(x_proj)), int(math.floor(y_proj))
+                            if (
+                                tx < 0
+                                or tx >= len(self.map[0])
+                                or ty < 0
+                                or ty >= len(self.map)
+                                or self.map[ty][tx] == 1
+                            ):
+                                effects["impact"] = {"x": x_proj, "y": y_proj}
+                                break
+                            for other in worms:
+                                if other["id"] == worm["id"] or other["health"] <= 0:
+                                    continue
+                                if math.hypot(other["x"] - x_proj, other["y"] - y_proj) <= BAZOOKA_HIT_RADIUS:
+                                    old_hp = other["health"]
+                                    new_hp = max(0.0, old_hp - BAZOOKA_DAMAGE)
+                                    actual_damage = old_hp - new_hp
+                                    other["health"] = new_hp
+                                    damage_total += actual_damage
+                                    if new_hp == 0.0:
+                                        kill_bonus += 100.0
+                                    effects["impact"] = {"x": x_proj, "y": y_proj}
+                                    t = BAZOOKA_MAX_RANGE + BAZOOKA_STEP_SIZE
+                                    break
+                            t += BAZOOKA_STEP_SIZE
+                        return copy.deepcopy(state), damage_total + kill_bonus, effects
+        
+                    # ─── Grenade ──────────────────────────────────────────────────────
+                    elif weapon == "grenade":
+                        dx_total = float(action.get("dx", 0.0))
+                        sign = 1.0 if dx_total >= 0 else -1.0
+                        width = max(-GRENADE_MAX_THROW, min(dx_total, GRENADE_MAX_THROW))
+                        height = abs(width) / 2.0
+                        x0, y0 = worm["x"], worm["y"]
+                        t = GRENADE_STEP_SIZE
+                        effects["impact"] = {}
+        
+                        while True:
+                            x_proj = x0 + sign * t
+                            u = (t / abs(width)) if width != 0 else 0.0
+                            y_proj = y0 - 4 * height * u * (1 - u)
+        
+                            effects["trajectory"].append({"x": x_proj, "y": y_proj})
+                            tx, ty = int(math.floor(x_proj)), int(math.floor(y_proj))
+        
+                            if (
+                                tx < 0
+                                or tx >= len(self.map[0])
+                                or ty < 0
+                                or ty >= len(self.map)
+                                or self.map[ty][tx] == 1
+                            ):
+                                effects["impact"] = {"x": x_proj, "y": y_proj}
+                                break
+        
+                            hit = False
+                            for other in worms:
+                                if other["id"] == worm["id"] or other["health"] <= 0:
+                                    continue
+                                if math.hypot(other["x"] - x_proj, other["y"] - y_proj) <= GRENADE_HIT_RADIUS:
+                                    old_hp = other["health"]
+                                    new_hp = max(0.0, old_hp - GRENADE_DAMAGE)
+                                    actual_damage = old_hp - new_hp
+                                    other["health"] = new_hp
+                                    damage_total += actual_damage
+                                    if new_hp == 0.0:
+                                        kill_bonus += 100.0
+                                    effects["impact"] = {"x": x_proj, "y": y_proj}
+                                    hit = True
+                                    break
+                            if hit:
+                                break
+        
+                            t += GRENADE_STEP_SIZE
+        
+                        return copy.deepcopy(state), damage_total + kill_bonus, effects
+        
+                    else:
+                        logger.warning("Unknown weapon: %s", weapon)
+                        return copy.deepcopy(state), 0.0, {}
+        
+                # Default: no reward
+                return copy.deepcopy(state), 0.0, effects
+        
+            def get_state_with_nicks(self, clients: Dict[Any, Dict[str, Any]]) -> Dict[str, Any]:
+                state_copy = copy.deepcopy(self.state)
+                for ws, info in clients.items():
+                    pid = info["id"] - 1
+                    if 0 <= pid < len(state_copy["worms"]):
+                        state_copy["worms"][pid]["nick"] = info.get("nick", f"Player {pid + 1}")
+                return state_copy
         --- SLUTT INNHOLD (game_core.py) ---
 
     |-- server.py
         --- START INNHOLD (server.py) ---
         #!/usr/bin/env python3
-        """Turn-based WebSocket server for W.O.R.M.S. (websockets ≥ 12.x)."""
+        """
+        Continuous W.O.R.M.S. match server.
+        Keeps the same WebSocket connections alive across many games so that RL clients can train without reconnecting.
+        """
         from __future__ import annotations
         
         import argparse
         import asyncio
         import json
         import logging
+        import random          # NEW
         import sys
         from enum import IntEnum
         from pathlib import Path
-        from typing import Any
+        from typing import Any, Dict
         
         import websockets
         from websockets.exceptions import ConnectionClosed
         
-        # ─── Define custom TRACE level ─────────────────────────────────────
-        TRACE_LEVEL_NUM = 5
-        logging.addLevelName(TRACE_LEVEL_NUM, "TRACE")
-        logging.TRACE = TRACE_LEVEL_NUM                      # make logging.TRACE available
-        def trace(self, message, *args, **kwargs):
-            if self.isEnabledFor(TRACE_LEVEL_NUM):
-                self._log(TRACE_LEVEL_NUM, message, args, **kwargs)
-        logging.Logger.trace = trace
+        TIME_LIMIT_MS = 15000
         
-        # ─── Parse --log-level & configure ────────────────────────────────
-        def setup_logging() -> logging.Logger:
-            parser = argparse.ArgumentParser(description="W.O.R.M.S. server")
-            parser.add_argument(
-                "--log-level",
-                choices=["TRACE", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-                default="INFO",
-                help="set logging level"
-            )
-            args = parser.parse_args()
-            level = getattr(logging, args.log_level)
-            logging.basicConfig(
-                level=level,
-                format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
-                datefmt="%H:%M:%S"
-            )
-            return logging.getLogger("server")
-        
-        logger = setup_logging()
-        
-        # ─── Import game logic ─────────────────────────────────────────────
+        # ensure game_core is importable
         sys.path.append(str(Path(__file__).resolve().parent))
-        from game_core import GameCore  # noqa: E402
+        from game_core import GameCore
         
         HOST, PORT = "127.0.0.1", 8765
         
+        
         class WSState(IntEnum):
             CONNECTING = 0
-            OPEN       = 1
-            CLOSING    = 2
-            CLOSED     = 3
+            OPEN = 1
+            CLOSING = 2
+            CLOSED = 3
+        
         
         class WormsServer:
-            def __init__(self) -> None:
-                self.core = GameCore()
-                self.clients: dict[Any, int] = {}
+            def __init__(self, expected_players: int) -> None:
+                self.expected = expected_players
+                self.core = GameCore(expected_players=self.expected)
+                self.clients: dict[Any, dict[str, Any]] = {}
                 self.turn_order: list[Any] = []
                 self.idx = 0
                 self.turn_counter = 0
-                self.game_started = False
+                self.game_id = 0
         
             async def accept(self, ws: Any) -> None:
                 try:
@@ -1381,127 +1662,227 @@ environment/
                     return
         
                 pid = len(self.clients) + 1
-                self.clients[ws] = pid
+                nick = msg.get("nick", f"Player {pid}")
+                self.clients[ws] = {"id": pid, "nick": nick}
                 self.turn_order.append(ws)
                 await ws.send(json.dumps({"type": "ASSIGN_ID", "player_id": pid}))
-                logger.info("new connection: player %d (%s)", pid, msg.get("nick", "?"))
-        
-                if not self.game_started and len(self.turn_order) == self.core.expected_players():
-                    self.game_started = True
-                    logger.info("roster full (%d players), starting game", len(self.turn_order))
-                    asyncio.create_task(self.game_loop())
         
                 try:
                     await ws.wait_closed()
                 finally:
-                    self.remove(ws)
+                    self._remove(ws)
         
-            async def game_loop(self) -> None:
-                logger.info("game loop started")
-                while self.turn_order:
-                    if self.idx >= len(self.turn_order):
-                        self.idx = 0
-        
-                    if self.core.game_over():
-                        await self.broadcast({"type": "GAME_OVER", **self.core.final_info()})
-                        logger.info("game over")
-                        return
-        
-                    ws = self.turn_order[self.idx]
-                    if ws.state != WSState.OPEN:
-                        self.remove(ws, quiet=True)
-                        continue
-        
-                    pid = self.clients[ws]
-                    begin_msg = {
-                        "type": "TURN_BEGIN",
-                        "turn_index": self.turn_counter,
-                        "player_id": pid,
-                        "state": self.core.state,
-                        "time_limit_ms": 15_000,
-                    }
-                    logger.trace("→ TURN_BEGIN to player %d", pid)
-                    if not await self.safe_send(ws, begin_msg):
-                        continue
-        
-                    try:
-                        raw = await asyncio.wait_for(ws.recv(), timeout=15)
-                        logger.trace("← raw message from %d: %s", pid, raw)
-                        msg = json.loads(raw)
-                        if msg.get("type") != "ACTION" or msg.get("player_id") != pid:
-                            raise ValueError
-                    except (asyncio.TimeoutError, ValueError):
-                        await self.safe_send(ws, {"type": "ERROR", "msg": "timeout or invalid action"})
-                        logger.warning("player %d timed out or sent invalid action", pid)
-                        self.idx += 1
-                        self.turn_counter += 1
-                        continue
-                    except ConnectionClosed:
-                        self.remove(ws)
-                        continue
-        
-                    action = msg.get("action", {})
-                    new_state, reward = self.core.step(pid, action)
-                    logger.trace("applied action %r for player %d → reward %.2f", action, pid, reward)
-        
-                    await self.broadcast({
-                        "type": "TURN_RESULT",
-                        "turn_index": self.turn_counter,
-                        "player_id": pid,
-                        "state": new_state,
-                        "reward": reward,
-                    })
-        
-                    self.idx += 1
-                    self.turn_counter += 1
-                    if self.turn_order:
-                        next_ws = self.turn_order[self.idx % len(self.turn_order)]
-                        await self.broadcast({
-                            "type": "TURN_END",
-                            "next_player_id": self.clients[next_ws],
-                        })
-        
-                logger.info("match ended (no players left)")
-        
-            async def broadcast(self, msg: dict) -> None:
-                data = json.dumps(msg)
-                logger.trace("broadcasting %s", msg.get("type"))
-                dead: list[Any] = []
-                for ws in list(self.turn_order):
-                    try:
-                        await ws.send(data)
-                    except ConnectionClosed:
-                        dead.append(ws)
-                for ws in dead:
-                    self.remove(ws, quiet=True)
-        
-            async def safe_send(self, ws: Any, msg: dict) -> bool:
-                try:
-                    await ws.send(json.dumps(msg))
-                    return True
-                except ConnectionClosed:
-                    self.remove(ws, quiet=True)
-                    return False
-        
-            def remove(self, ws: Any, *, quiet: bool = False) -> None:
+            def _remove(self, ws: Any) -> None:
                 if ws in self.turn_order:
                     idx = self.turn_order.index(ws)
                     self.turn_order.remove(ws)
                     if idx <= self.idx and self.idx > 0:
                         self.idx -= 1
                 if ws in self.clients:
-                    pid = self.clients.pop(ws)
-                    if not quiet:
-                        logger.info("player %d disconnected", pid)
+                    pid = self.clients.pop(ws)["id"]
+                    logger.info("player %d disconnected", pid)
+        
+            async def _safe_send(self, ws: Any, msg: Dict[str, Any]) -> bool:
+                try:
+                    await ws.send(json.dumps(msg))
+                    return True
+                except ConnectionClosed:
+                    self._remove(ws)
+                    return False
+        
+            async def _broadcast(self, msg: Dict[str, Any]) -> None:
+                for ws in list(self.clients):
+                    await self._safe_send(ws, msg)
+        
+            async def _play_single_game(self) -> None:
+                # ── NEW: fresh round‑robin list for the new game ────────────────────
+                self.turn_order = [ws for ws in self.clients if ws.state == WSState.OPEN]
+                random.shuffle(self.turn_order)  # vary who starts
+                # ────────────────────────────────────────────────────────────────────
+        
+                self.core = GameCore(expected_players=self.expected)
+                self.turn_counter = 0
+                self.idx = 0
+                self.game_id += 1
+        
+                initial = self.core.get_state_with_nicks(self.clients)
+                await self._broadcast(
+                    {
+                        "type": "NEW_GAME",
+                        "game_id": self.game_id,
+                        "state": initial,
+                    }
+                )
+        
+                while True:
+                    alive = [w for w in self.core.state["worms"] if w["health"] > 0]
+                    if len(alive) <= 1:
+                        winner = alive[0]["id"] + 1 if alive else None
+                        await self._broadcast(
+                            {
+                                "type": "GAME_OVER",
+                                "game_id": self.game_id,
+                                "winner_id": winner,
+                                "final_state": self.core.state,
+                            }
+                        )
+                        return
+        
+                    if not self.turn_order:
+                        return
+        
+                    if self.idx >= len(self.turn_order):
+                        self.idx = 0
+        
+                    ws = self.turn_order[self.idx]
+                    if ws.state != WSState.OPEN:
+                        self._remove(ws)
+                        continue
+        
+                    pid = self.clients[ws]["id"]
+                    worm = self.core.state["worms"][pid - 1]
+        
+                    if worm["health"] <= 0:
+                        await self._broadcast({"type": "PLAYER_ELIMINATED", "player_id": pid})
+                        self.turn_order.pop(self.idx)
+                        continue
+        
+                    begin = {
+                        "type": "TURN_BEGIN",
+                        "turn_index": self.turn_counter,
+                        "player_id": pid,
+                        "state": self.core.get_state_with_nicks(self.clients),
+                        "time_limit_ms": TIME_LIMIT_MS,
+                    }
+                    if not await self._safe_send(ws, begin):
+                        continue
+        
+                    try:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=15)
+                        msg = json.loads(raw)
+                        if msg.get("type") != "ACTION" or msg.get("player_id") != pid:
+                            raise ValueError
+                    except (asyncio.TimeoutError, ValueError):
+                        self.idx += 1
+                        self.turn_counter += 1
+                        continue
+                    except ConnectionClosed:
+                        self._remove(ws)
+                        continue
+        
+                    action = msg.get("action", {})
+                    new_state, reward, effects = self.core.step(pid, action)
+                    await self._broadcast(
+                        {
+                            "type": "TURN_RESULT",
+                            "turn_index": self.turn_counter,
+                            "player_id": pid,
+                            "state": new_state,
+                            "reward": reward,
+                            "effects": effects,
+                        }
+                    )
+        
+                    next_idx = (self.idx + 1) % len(self.turn_order)
+                    next_pid = self.clients[self.turn_order[next_idx]]["id"]
+                    await self._broadcast({"type": "TURN_END", "next_player_id": next_pid})
+        
+                    self.idx += 1
+                    self.turn_counter += 1
+        
+            async def orchestrator(self) -> None:
+                while True:
+                    while len(self.clients) < self.expected:
+                        await asyncio.sleep(0.1)
+                    await self._play_single_game()
+        
         
         async def main() -> None:
-            async with websockets.serve(WormsServer().accept, HOST, PORT):
-                logger.info("Listening on ws://%s:%d", HOST, PORT)
-                await asyncio.Future()  # run forever
+            parser = argparse.ArgumentParser(description="W.O.R.M.S. continuous server")
+            parser.add_argument(
+                "--log-level",
+                choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+                default="INFO",
+                help="set logging level",
+            )
+            parser.add_argument(
+                "--max-players", type=int, default=2, help="number of worms per game"
+            )
+            args = parser.parse_args()
+        
+            logging.basicConfig(
+                level=getattr(logging, args.log_level),
+                format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+                datefmt="%H:%M:%S",
+            )
+            global logger
+            logger = logging.getLogger("server")
+        
+            server = WormsServer(expected_players=args.max_players)
+            async with websockets.serve(server.accept, HOST, PORT):
+                asyncio.create_task(server.orchestrator())
+                await asyncio.Future()
+        
         
         if __name__ == "__main__":
             asyncio.run(main())
         --- SLUTT INNHOLD (server.py) ---
+
+    maps/
+        |-- 001.json
+            --- START INNHOLD (001.json) ---
+            [
+              [0,0,0,0,0,0,0,0,0,0,0,0],
+              [0,0,0,0,0,0,0,0,0,0,0,0],
+              [0,1,0,0,0,0,0,0,1,1,1,0],
+              [0,1,1,1,1,0,0,0,1,1,1,0],
+              [0,1,1,1,1,1,1,1,1,1,1,0]
+            ]
+            --- SLUTT INNHOLD (001.json) ---
+
+        |-- 002.json
+            --- START INNHOLD (002.json) ---
+            [
+              [0,0,0,0,0,0,0,0,0,0],
+              [0,0,0,0,0,0,0,0,0,0],
+              [0,0,0,1,1,1,1,0,0,0],
+              [0,0,0,1,1,1,1,1,0,0],
+              [0,1,1,1,1,1,1,1,1,0]
+            ]
+            --- SLUTT INNHOLD (002.json) ---
+
+        |-- 003.json
+            --- START INNHOLD (003.json) ---
+            [
+              [0,0,0,0,0,0,0,0,0,0,0,0,0],
+              [0,0,0,0,0,0,0,0,0,0,0,0,0],
+              [0,1,1,0,0,0,0,0,0,0,0,0,0],
+              [0,1,1,1,1,0,0,0,0,1,1,1,0],
+              [0,1,1,1,1,0,1,1,1,1,1,1,0]
+            ]
+            --- SLUTT INNHOLD (003.json) ---
+
+        |-- 004.json
+            --- START INNHOLD (004.json) ---
+            [
+              [0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+              [0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+              [0,1,1,0,0,0,0,0,0,0,0,1,1,0],
+              [0,1,1,0,0,0,1,1,0,0,1,1,1,0],
+              [0,1,1,1,0,0,1,1,1,0,1,1,1,0]
+            ]
+            --- SLUTT INNHOLD (004.json) ---
+
+        |-- 005.json
+            --- START INNHOLD (005.json) ---
+            [
+              [0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+              [0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+              [0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+              [0,0,0,0,1,1,1,1,0,0,0,0,0,0],
+              [0,1,1,1,1,1,1,1,1,1,1,1,1,0]
+            ]
+            --- SLUTT INNHOLD (005.json) ---
 
 frontend/
     |-- package-lock.json
@@ -2073,3 +2454,4 @@ frontend/
 
     public/
     src/
+training_plots/
