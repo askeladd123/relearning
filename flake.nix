@@ -14,7 +14,7 @@
           buildInputs = with pkgs; [
             nushell
             tree
-            (python313.withPackages (p: with p; [websockets numpy torch])) # WARN: this is really for the `agents` folder
+            (python313.withPackages (p: with p; [websockets numpy torch matplotlib])) # WARN: this is really for the `agents` folder
           ];
         };
       }
