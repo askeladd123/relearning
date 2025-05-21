@@ -11,6 +11,7 @@
         pkgs = nixpkgs.legacyPackages.${system};
       in {
         devShell = pkgs.mkShell {
+          buildInputs = with pkgs; [(python313.withPackages (p: with p; [websockets]))];
           # buildInputs = with pkgs; [(python313.withPackages (p: with p; [websockets numpy torch]))]; # WARN: look at the root flake, this project (for some reason) is run from there
         };
       }

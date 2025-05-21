@@ -1,3 +1,4 @@
+# File: agents/client.py
 #!/usr/bin/env python3
 """
 Reference bot that now keeps its WebSocket open across many games.
@@ -32,6 +33,7 @@ logger = setup_logging()
 
 HOST, PORT = "127.0.0.1", 8765
 
+# List of possible actions
 ACTIONS = [
     {"action": "stand"},
     {"action": "walk", "dx": 1.0},
@@ -39,6 +41,26 @@ ACTIONS = [
     {"action": "attack", "weapon": "bazooka", "angle_deg": 30.0},
     {"action": "attack", "weapon": "grenade", "dx": 2.0},
 ]
+
+# Specify a probability for each action; must sum to 1.0
+# e.g. make "walk" less likely by giving it a smaller weight.
+ACTION_PROBS = [
+    0.10,  # stand
+    0.05,  # walk
+    0.25,  # kick
+    0.30,  # bazooka
+    0.30,  # grenade
+]
+
+# Validate at import time
+if len(ACTION_PROBS) != len(ACTIONS):
+    raise ValueError(
+        f"ACTION_PROBS length ({len(ACTION_PROBS)}) does not match "
+        f"ACTIONS length ({len(ACTIONS)})"
+    )
+total_prob = sum(ACTION_PROBS)
+if abs(total_prob - 1.0) > 1e-8:
+    raise ValueError(f"ACTION_PROBS must sum to 1.0, but sum to {total_prob}")
 
 async def start_client() -> None:
     uri = f"ws://{HOST}:{PORT}"
@@ -63,10 +85,14 @@ async def start_client() -> None:
 
             elif t == "NEW_GAME":
                 eliminated = False
-                logger.info("new episode %s started – back in the game!", msg.get("game_id"))
+                logger.info(
+                    "new episode %s started – back in the game!",
+                    msg.get("game_id"),
+                )
 
             elif t == "TURN_BEGIN" and msg.get("player_id") == player_id and not eliminated:
-                action = random.choice(ACTIONS)
+                # pick an action according to ACTION_PROBS
+                action = random.choices(ACTIONS, weights=ACTION_PROBS, k=1)[0]
                 payload = {"type": "ACTION", "player_id": player_id, "action": action}
                 await ws.send(json.dumps(payload))
                 logger.debug("did action: %r", payload)

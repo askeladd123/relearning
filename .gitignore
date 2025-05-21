@@ -1,3 +1,6 @@
 /data/*
 node_modules
 __pycache__
+/agents/a2c_manual/a2c_worms_agent2_checkpoint.pth
+/agents/a2c_manual/a2c_worms_agent1_checkpoint.pth
+/agents/a2c_manual/training_plots_output
