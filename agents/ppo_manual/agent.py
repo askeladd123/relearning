@@ -6,12 +6,9 @@ from torch.distributions import Categorical, Normal
 import numpy as np
 from pathlib import Path
 
-from agents.common import config  # Bruker felles config
-# Endre denne linjen:
-# from .model import ActorCriticNetwork
-# til:
-from agents.ppo_manual.model import ActorCriticNetwork  # Bruker PPO sin modellfil
-from agents.common.utils import preprocess_state, format_action  # Bruker felles utils
+from agents.common import config
+from agents.ppo_manual.model import ActorCriticNetwork  # Korrekt import her
+from agents.common.utils import preprocess_state, format_action
 
 
 class PPOAgent:
@@ -22,19 +19,15 @@ class PPOAgent:
         self.player_id = None
         self.agent_name = agent_name
 
-        # Buffere for PPO - samler en hel batch før oppdatering
         self.map_pixel_buffer = []
         self.worm_vector_buffer = []
-
         self.action_indices_buffer = []
         self.action_params_raw_buffer = []
-
         self.log_probs_buffer = []
         self.values_buffer = []
         self.rewards_buffer = []
         self.dones_buffer = []
         self.entropies_buffer = []
-
         self.batch_count = 0
 
     def set_player_id(self, player_id: int):
@@ -51,8 +44,8 @@ class PPOAgent:
         )
         if not is_my_worm_alive:
             self.map_pixel_buffer.append(
-                torch.zeros(1, config.CNN_INPUT_CHANNELS, config.MAP_HEIGHT, config.MAP_WIDTH).to(config.DEVICE))
-            self.worm_vector_buffer.append(torch.zeros(1, config.WORM_VECTOR_DIM).to(config.DEVICE))
+                torch.zeros(1, config.CNN_INPUT_CHANNELS, config.MAP_HEIGHT, config.MAP_WIDTH, device=config.DEVICE))
+            self.worm_vector_buffer.append(torch.zeros(1, config.WORM_VECTOR_DIM, device=config.DEVICE))
             self.values_buffer.append(torch.tensor(0.0, device=config.DEVICE, dtype=torch.float32))
             self.log_probs_buffer.append(torch.tensor(0.0, device=config.DEVICE, dtype=torch.float32))
             self.entropies_buffer.append(torch.tensor(0.0, device=config.DEVICE, dtype=torch.float32))
@@ -98,9 +91,15 @@ class PPOAgent:
 
         elif chosen_network_action_name == 'attack_bazooka':
             angle_mean, angle_std = actor_outputs['bazooka_params']
-            # Sørg for at mean og std er skalarer for Normal-distribusjonen hvis de kommer ut med batch-dim
-            current_angle_mean = angle_mean.squeeze() if angle_mean.ndim > 0 else angle_mean
-            current_angle_std = angle_std.squeeze() if angle_std.ndim > 0 else angle_std
+
+            # Sikre skalar for mean og std for Normal (fjerner batch dim hvis den er der)
+            current_angle_mean = angle_mean.squeeze(0) if angle_mean.ndim > 1 and angle_mean.shape[
+                0] == 1 else angle_mean.squeeze()
+            current_angle_std = angle_std.squeeze(0) if angle_std.ndim > 1 and angle_std.shape[
+                0] == 1 else angle_std.squeeze()
+
+            # Klem std for å unngå for små/store verdier som kan gi NaN i log_prob
+            current_angle_std = torch.clamp(current_angle_std, 1e-5, 10.0)
 
             dist = Normal(current_angle_mean, current_angle_std)
             angle_val_tensor = dist.sample()
@@ -120,18 +119,25 @@ class PPOAgent:
 
         self.action_params_raw_buffer.append(raw_params_for_buffer)
 
-        # Sikre at alle er skalar-tensorer før stack/sum
-        squeezed_log_probs = [lp.squeeze() for lp in step_log_probs]
-        squeezed_entropies = [e.squeeze() for e in step_entropies]
+        squeezed_log_probs = [lp.squeeze() for lp in step_log_probs if lp is not None and hasattr(lp, 'squeeze')]
+        squeezed_entropies = [e.squeeze() for e in step_entropies if e is not None and hasattr(e, 'squeeze')]
 
-        stacked_log_probs = torch.stack(squeezed_log_probs)
-        self.log_probs_buffer.append(stacked_log_probs.sum())
+        valid_log_probs = [lp for lp in squeezed_log_probs if lp.ndim == 0]
+        valid_entropies = [e for e in squeezed_entropies if e.ndim == 0]
 
-        stacked_entropies = torch.stack(squeezed_entropies)
-        self.entropies_buffer.append(stacked_entropies.sum())
+        if valid_log_probs:
+            stacked_log_probs = torch.stack(valid_log_probs)
+            self.log_probs_buffer.append(stacked_log_probs.sum())
+        else:
+            self.log_probs_buffer.append(torch.tensor(0.0, device=config.DEVICE, dtype=torch.float32))
+
+        if valid_entropies:
+            stacked_entropies = torch.stack(valid_entropies)
+            self.entropies_buffer.append(stacked_entropies.sum())
+        else:
+            self.entropies_buffer.append(torch.tensor(0.0, device=config.DEVICE, dtype=torch.float32))
 
         action_json_to_send = format_action(network_action_idx_item, params_for_formatting)
-        # self.actions_buffer.append(action_json_to_send) # Fjernet, da den ikke brukes i PPO loss
         return action_json_to_send
 
     def store_reward_and_done(self, reward: float, done: bool):
@@ -141,59 +147,78 @@ class PPOAgent:
 
     def _compute_gae_and_returns(self, next_value_tensor_no_grad):
         rewards_np = np.array(self.rewards_buffer, dtype=np.float32)
-        values_np = torch.stack(self.values_buffer).cpu().numpy()
+
+        # Sikre at values_buffer kun inneholder tensorer før stack
+        valid_values = [v for v in self.values_buffer if isinstance(v, torch.Tensor)]
+        if not valid_values:  # Hvis ingen gyldige verdier (f.eks. alle var døde ormer)
+            # Returner null-tensorer med forventet form hvis rewards_np ikke er tom
+            if rewards_np.size > 0:
+                return torch.zeros_like(torch.tensor(rewards_np, device=config.DEVICE), dtype=torch.float32), \
+                    torch.zeros_like(torch.tensor(rewards_np, device=config.DEVICE), dtype=torch.float32)
+            else:  # Hvis ingen rewards heller, returner tomme tensorer
+                return torch.empty(0, device=config.DEVICE, dtype=torch.float32), \
+                    torch.empty(0, device=config.DEVICE, dtype=torch.float32)
+
+        values_stacked = torch.stack(valid_values)
+        values_np = values_stacked.detach().cpu().numpy()
         dones_np = np.array(self.dones_buffer, dtype=np.float32)
 
         advantages = np.zeros_like(rewards_np)
-        last_gae_lam = 0
+        last_gae_lam = 0.0  # Initialiser som float
         num_steps = len(rewards_np)
 
         for t in reversed(range(num_steps)):
             if t == num_steps - 1:
+                next_val = next_value_tensor_no_grad.detach().cpu().item()
                 next_non_terminal = 1.0 - dones_np[t]
-                next_val = next_value_tensor_no_grad.cpu().item()
             else:
-                next_non_terminal = 1.0 - dones_np[t]  # Endret fra t+1 til t for dones_np
                 next_val = values_np[t + 1]
+                next_non_terminal = 1.0 - dones_np[t + 1]
 
             delta = rewards_np[t] + config.GAMMA_PPO * next_val * next_non_terminal - values_np[t]
             advantages[
                 t] = last_gae_lam = delta + config.GAMMA_PPO * config.GAE_LAMBDA_PPO * next_non_terminal * last_gae_lam
 
         returns_np = advantages + values_np
-        return torch.tensor(advantages, device=config.DEVICE, dtype=torch.float32), torch.tensor(returns_np,
-                                                                                                 device=config.DEVICE,
-                                                                                                 dtype=torch.float32)
+        return torch.tensor(advantages, device=config.DEVICE, dtype=torch.float32), \
+            torch.tensor(returns_np, device=config.DEVICE, dtype=torch.float32)
 
-    def learn(self, next_game_state_json: dict | None):
+    def learn(self, next_game_state_json_for_bootstrap: dict | None):
         if self.batch_count < (config.PPO_BATCH_SIZE if hasattr(config, 'PPO_BATCH_SIZE') else 128):
             return None, None, None
 
         R_bootstrap_next_state = torch.tensor(0.0, device=config.DEVICE, dtype=torch.float32)
-        if not self.dones_buffer[-1]:  # Bare bootstrap hvis siste steg IKKE var terminalt
-            if next_game_state_json and self.player_id is not None:
+        if not self.dones_buffer[-1]:
+            if next_game_state_json_for_bootstrap and self.player_id is not None:
                 my_worm_json_id = self.player_id - 1
                 is_my_worm_alive_in_next_state = any(
                     w['id'] == my_worm_json_id and w['health'] > 0
-                    for w in next_game_state_json.get('worms', [])
+                    for w in next_game_state_json_for_bootstrap.get('worms', [])
                 )
                 if is_my_worm_alive_in_next_state:
-                    if isinstance(next_game_state_json, dict) and \
-                            next_game_state_json.get("map") and next_game_state_json.get("worms"):
-                        next_map, next_worm = preprocess_state(next_game_state_json, self.player_id)
+                    if isinstance(next_game_state_json_for_bootstrap, dict) and \
+                            next_game_state_json_for_bootstrap.get("map") and next_game_state_json_for_bootstrap.get(
+                        "worms"):
+                        next_map, next_worm = preprocess_state(next_game_state_json_for_bootstrap, self.player_id)
                         with torch.no_grad():
                             _, R_bootstrap_next_state_tensor = self.network(next_map, next_worm)
                             R_bootstrap_next_state = R_bootstrap_next_state_tensor.squeeze()
 
         advantages, returns = self._compute_gae_and_returns(R_bootstrap_next_state)
+
+        # Sjekk om advantages/returns er tomme (kan skje hvis _compute_gae_and_returns returnerer tomme)
+        if advantages.nelement() == 0 or returns.nelement() == 0:
+            self.clear_buffers_and_count()
+            return 0.0, 0.0, 0.0
+
         old_log_probs_tensor = torch.stack(self.log_probs_buffer).detach()
 
         map_pixel_batch = torch.cat(self.map_pixel_buffer, dim=0)
         worm_vector_batch = torch.cat(self.worm_vector_buffer, dim=0)
 
-        total_policy_loss_epoch_avg = 0
-        total_value_loss_epoch_avg = 0
-        total_entropy_loss_epoch_avg = 0
+        total_policy_loss_epoch_sum = 0
+        total_value_loss_epoch_sum = 0
+        total_entropy_loss_epoch_sum = 0
 
         num_samples_in_batch = len(self.rewards_buffer)
         batch_indices = np.arange(num_samples_in_batch)
@@ -201,40 +226,39 @@ class PPOAgent:
         for _ in range(config.PPO_EPOCHS if hasattr(config, 'PPO_EPOCHS') else 4):
             np.random.shuffle(batch_indices)
 
-            # For PPO, vi itererer over hele batchen (eller minibatches av den)
-            # Her tar vi hele batchen for enkelhets skyld
             shuffled_maps = map_pixel_batch[batch_indices]
             shuffled_worms = worm_vector_batch[batch_indices]
 
             actor_outputs_new, values_new_tensor = self.network(shuffled_maps, shuffled_worms)
-            shuffled_values_new = values_new_tensor.squeeze()  # Blir (batch_size)
+            shuffled_values_new = values_new_tensor.squeeze()
 
-            new_log_probs_list_for_epoch = []
-            new_entropies_list_for_epoch = []
+            new_log_probs_parts_epoch = []
+            new_entropies_parts_epoch = []
 
-            # Gå gjennom de shufflet indeksene for å hente de tilsvarende lagrede handlingene/parametrene
-            for original_idx in batch_indices:  # original_idx referer til posisjonen i de ushufflede bufferne
+            for i_shuffled, original_idx in enumerate(batch_indices):
                 action_type_idx_orig = self.action_indices_buffer[original_idx]
 
-                if action_type_idx_orig == -1:  # Ormen var død
-                    new_log_probs_list_for_epoch.append(torch.tensor(0.0, device=config.DEVICE))
-                    new_entropies_list_for_epoch.append(torch.tensor(0.0, device=config.DEVICE))
+                if action_type_idx_orig == -1:
+                    new_log_probs_parts_epoch.append(torch.tensor(0.0, device=config.DEVICE))
+                    new_entropies_parts_epoch.append(torch.tensor(0.0, device=config.DEVICE))
                     continue
 
-                # Finn korresponderende output fra nettverket for dette samplet
-                # batch_indices er shufflet, så vi må finne hvor original_idx havnet i den shufflet rekkefølgen
-                current_sample_shuffled_idx = np.where(batch_indices == original_idx)[0][0]
-
+                # Hent output for det nåværende shufflet samplet
                 current_actor_output_for_sample = {
-                    'action_type_probs': actor_outputs_new['action_type_probs'][current_sample_shuffled_idx],
+                    'action_type_probs': actor_outputs_new['action_type_probs'][i_shuffled],
                     'walk_dx_probs': actor_outputs_new['walk_dx_probs'][
-                        current_sample_shuffled_idx] if 'walk_dx_probs' in actor_outputs_new else None,
-                    'bazooka_params': (actor_outputs_new['bazooka_params'][0][current_sample_shuffled_idx],
-                                       actor_outputs_new['bazooka_params'][1][current_sample_shuffled_idx]) if
-                    actor_outputs_new['bazooka_params'] and actor_outputs_new['bazooka_params'][0] is not None else (
+                        i_shuffled] if 'walk_dx_probs' in actor_outputs_new and actor_outputs_new[
+                        'walk_dx_probs'] is not None else None,
+                    'bazooka_params': (actor_outputs_new['bazooka_params'][0][i_shuffled],
+                                       actor_outputs_new['bazooka_params'][1][i_shuffled]) if actor_outputs_new[
+                                                                                                  'bazooka_params'] and
+                                                                                              actor_outputs_new[
+                                                                                                  'bazooka_params'][
+                                                                                                  0] is not None else (
                     None, None),
                     'grenade_dx_probs': actor_outputs_new['grenade_dx_probs'][
-                        current_sample_shuffled_idx] if 'grenade_dx_probs' in actor_outputs_new else None,
+                        i_shuffled] if 'grenade_dx_probs' in actor_outputs_new and actor_outputs_new[
+                        'grenade_dx_probs'] is not None else None,
                 }
 
                 dist_action_type = Categorical(current_actor_output_for_sample['action_type_probs'])
@@ -247,49 +271,54 @@ class PPOAgent:
                 action_name = config.NETWORK_ACTION_ORDER[action_type_idx_orig]
                 raw_params_this_step_orig = self.action_params_raw_buffer[original_idx]
 
-                if action_name == 'walk':
+                if action_name == 'walk' and current_actor_output_for_sample['walk_dx_probs'] is not None:
                     dist_walk = Categorical(current_actor_output_for_sample['walk_dx_probs'])
                     log_p_walk = dist_walk.log_prob(raw_params_this_step_orig['walk_dx_bin_idx'])
                     entropy_walk = dist_walk.entropy()
                     current_log_probs_parts.append(log_p_walk)
                     current_entropies_parts.append(entropy_walk)
-                elif action_name == 'attack_bazooka':
+                elif action_name == 'attack_bazooka' and current_actor_output_for_sample['bazooka_params'][
+                    0] is not None:
                     mean, std = current_actor_output_for_sample['bazooka_params']
-                    dist_bzk = Normal(mean, std)  # Sørg for at mean/std er skalarer her
+                    # Klem std for å unngå for små/store verdier som kan gi NaN i log_prob
+                    std = torch.clamp(std, 1e-5, 10.0)
+                    dist_bzk = Normal(mean, std)
                     log_p_bzk = dist_bzk.log_prob(raw_params_this_step_orig['bazooka_angle_val'])
                     entropy_bzk = dist_bzk.entropy()
                     current_log_probs_parts.append(log_p_bzk)
                     current_entropies_parts.append(entropy_bzk)
-                elif action_name == 'attack_grenade':
+                elif action_name == 'attack_grenade' and current_actor_output_for_sample[
+                    'grenade_dx_probs'] is not None:
                     dist_grenade = Categorical(current_actor_output_for_sample['grenade_dx_probs'])
                     log_p_grenade = dist_grenade.log_prob(raw_params_this_step_orig['grenade_dx_bin_idx'])
                     entropy_grenade = dist_grenade.entropy()
                     current_log_probs_parts.append(log_p_grenade)
                     current_entropies_parts.append(entropy_grenade)
 
-                new_log_probs_list_for_epoch.append(torch.stack(current_log_probs_parts).sum())
-                new_entropies_list_for_epoch.append(torch.stack(current_entropies_parts).sum())
+                valid_log_p = [lp for lp in current_log_probs_parts if lp is not None]
+                valid_ent = [e for e in current_entropies_parts if e is not None]
 
-            # active_mask er basert på *opprinnelig* rekkefølge
+                new_log_probs_parts_epoch.append(
+                    torch.stack(valid_log_p).sum() if valid_log_p else torch.tensor(0.0, device=config.DEVICE))
+                new_entropies_parts_epoch.append(
+                    torch.stack(valid_ent).sum() if valid_ent else torch.tensor(0.0, device=config.DEVICE))
+
             active_mask_orig = torch.tensor([idx != -1 for idx in self.action_indices_buffer], device=config.DEVICE,
                                             dtype=torch.bool)
-            # shufflet_active_mask er basert på *shufflet* rekkefølge
             shuffled_active_mask = active_mask_orig[batch_indices]
 
             if not torch.any(shuffled_active_mask):
-                # Ingen aktive samples i denne (teoretisk mulig hvis alle døde i batchen)
                 continue
 
-                # Tensorer for aktive, shufflet samples
-            final_new_log_probs = torch.stack(new_log_probs_list_for_epoch)[shuffled_active_mask]
-            final_new_entropies = torch.stack(new_entropies_list_for_epoch)[shuffled_active_mask]
+            final_new_log_probs = torch.stack(new_log_probs_parts_epoch)[shuffled_active_mask]
+            final_new_entropies = torch.stack(new_entropies_parts_epoch)[shuffled_active_mask]
             final_shuffled_values_new = shuffled_values_new[shuffled_active_mask]
 
             final_shuffled_old_log_probs = old_log_probs_tensor[batch_indices][shuffled_active_mask]
             final_shuffled_advantages = advantages[batch_indices][shuffled_active_mask]
             final_shuffled_returns = returns[batch_indices][shuffled_active_mask]
 
-            if final_shuffled_old_log_probs.nelement() == 0:  # Dobbeltsjekk
+            if final_shuffled_old_log_probs.nelement() == 0:
                 continue
 
             ratios = torch.exp(final_new_log_probs - final_shuffled_old_log_probs)
@@ -315,14 +344,14 @@ class PPOAgent:
                 torch.nn.utils.clip_grad_norm_(self.network.parameters(), getattr(config, grad_norm_key))
             self.optimizer.step()
 
-            total_policy_loss_epoch_avg += policy_loss.item()
-            total_value_loss_epoch_avg += value_loss.item()
-            total_entropy_loss_epoch_avg += entropy_loss.item()
+            total_policy_loss_epoch_sum += policy_loss.item()
+            total_value_loss_epoch_sum += value_loss.item()
+            total_entropy_loss_epoch_sum += entropy_loss.item()
 
         ppo_epochs_val = config.PPO_EPOCHS if hasattr(config, 'PPO_EPOCHS') else 4
-        avg_policy_loss = total_policy_loss_epoch_avg / ppo_epochs_val
-        avg_value_loss = total_value_loss_epoch_avg / ppo_epochs_val
-        avg_entropy_loss = total_entropy_loss_epoch_avg / ppo_epochs_val
+        avg_policy_loss = total_policy_loss_epoch_sum / ppo_epochs_val if ppo_epochs_val > 0 else 0
+        avg_value_loss = total_value_loss_epoch_sum / ppo_epochs_val if ppo_epochs_val > 0 else 0
+        avg_entropy_loss = total_entropy_loss_epoch_sum / ppo_epochs_val if ppo_epochs_val > 0 else 0
 
         self.clear_buffers_and_count()
         return avg_policy_loss, avg_value_loss, avg_entropy_loss

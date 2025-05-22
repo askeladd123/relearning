@@ -17,16 +17,12 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import random
 
-# Felles config og utils
 from agents.common import config
-from agents.common.utils import format_action, \
-    preprocess_state  # Selv om agenten gjør dette internt, greit å ha for ev. debug
+from agents.common.utils import format_action, preprocess_state
 
-# Import agent klasser
 from agents.a2c_manual.agent import A2CAgent
 from agents.ppo_manual.agent import PPOAgent
 
-# --- Global logging for plotting ---
 TRAINING_STATS = {}
 PLOT_DIR = Path(__file__).resolve().parent / "training_plots_output"
 PLOT_DIR.mkdir(parents=True, exist_ok=True)
@@ -54,7 +50,7 @@ async def run_single_agent_session(agent_id_str: str, agent_type: str, checkpoin
 
     if agent_id_str not in TRAINING_STATS:
         TRAINING_STATS[agent_id_str] = {
-            "agent_type": agent_type,  # Nytt for plotting
+            "agent_type": agent_type,
             "game_rewards_raw": [],
             "policy_loss_per_game": [],
             "value_loss_per_game": [],
@@ -64,7 +60,7 @@ async def run_single_agent_session(agent_id_str: str, agent_type: str, checkpoin
         }
 
     checkpoint_path = Path(__file__).resolve().parent / f"{agent_type}_manual" / checkpoint_filename
-    agent.load_model(checkpoint_path)
+    agent.load_model(str(checkpoint_path))  # Sørg for at det er en streng
 
     connection_attempts = 0
     max_connection_attempts = 10
@@ -78,8 +74,7 @@ async def run_single_agent_session(agent_id_str: str, agent_type: str, checkpoin
         current_game_step_rewards = []
 
         if agent_type == 'a2c':
-            agent.clear_buffers()  # A2C tømmer internt etter learn()
-        # PPO tømmer bufferne (og batch_count) når learn() faktisk kjører en oppdatering
+            agent.clear_buffers()
 
         current_game_id = None
         is_my_turn_flag = False
@@ -123,22 +118,14 @@ async def run_single_agent_session(agent_id_str: str, agent_type: str, checkpoin
                                         temp_policy_losses_for_game.append(p_l)
                                         temp_value_losses_for_game.append(v_l)
                                         temp_entropy_losses_for_game.append(e_l)
-                                elif agent_type == 'ppo' and agent.batch_count > 0:  # PPO might not have enough for a batch
-                                    # For PPO, vi må tvinge en læring selv om batchen ikke er full,
-                                    # siden spillet slutter uventet.
-                                    # La oss si at PPO's learn håndterer dette ved å enten lære på det den har,
-                                    # eller bare tømme bufferne hvis det er for lite.
-                                    # Dette er en forenkling. Ideelt sett burde PPO lære når batchen er full.
-                                    # Men for GAME_OVER-lignende eventer, må vi håndtere det.
-                                    # Vi setter ikke done=True her, da learn() for PPO sjekker dones_buffer
-                                    p_l, v_l, e_l = agent.learn(
-                                        last_known_state_for_learn)  # PPO uses internal dones_buffer
+                                elif agent_type == 'ppo' and agent.batch_count > 0:
+                                    p_l, v_l, e_l = agent.learn(last_known_state_for_learn)
                                     if p_l is not None:
                                         temp_policy_losses_for_game.append(p_l)
                                         temp_value_losses_for_game.append(v_l)
                                         temp_entropy_losses_for_game.append(e_l)
 
-                                if temp_policy_losses_for_game:  # Logg ufullstendig spill
+                                if temp_policy_losses_for_game:
                                     TRAINING_STATS[agent_id_str]['game_rewards_raw'].append(
                                         sum(current_game_step_rewards))
                                     TRAINING_STATS[agent_id_str]['policy_loss_per_game'].append(
@@ -151,8 +138,11 @@ async def run_single_agent_session(agent_id_str: str, agent_type: str, checkpoin
                                     TRAINING_STATS[agent_id_str]["total_steps_across_games"] += steps_this_game
 
                             current_game_id = new_game_id
-                            if agent_type == 'a2c': agent.clear_buffers()
-                            # PPO tømmer når batchen er full i learn()
+                            if agent_type == 'a2c':
+                                agent.clear_buffers()
+                            elif agent_type == 'ppo' and agent.batch_count > 0:  # PPO tømmer kun når learn faktisk kjører
+                                pass  # PPO håndterer sin egen buffer tømming i learn()
+
                             temp_policy_losses_for_game, temp_value_losses_for_game, temp_entropy_losses_for_game, current_game_step_rewards = [], [], [], []
                             am_i_eliminated_this_game = False
                             is_my_turn_flag = False
@@ -167,11 +157,24 @@ async def run_single_agent_session(agent_id_str: str, agent_type: str, checkpoin
                             if msg.get("player_id") == agent.player_id and not am_i_eliminated_this_game:
                                 is_my_turn_flag = True
                                 steps_this_game += 1
-                                if not game_state_for_action:  # Skulle ikke skje hvis orm er i live
+                                if not game_state_for_action:
                                     action_to_send_obj = {"action": "stand"}
-                                    if agent_type == 'a2c': agent.values_buffer.append(
-                                        torch.tensor(0.0, device=config.DEVICE))
-                                    # For PPO, håndteres dette i select_action
+                                    if agent_type == 'a2c':
+                                        agent.values_buffer.append(torch.tensor(0.0, device=config.DEVICE))
+                                    elif agent_type == 'ppo':  # PPO needs to fill all buffers even for dead worm
+                                        agent.map_pixel_buffer.append(
+                                            torch.zeros(1, config.CNN_INPUT_CHANNELS, config.MAP_HEIGHT,
+                                                        config.MAP_WIDTH, device=config.DEVICE))
+                                        agent.worm_vector_buffer.append(
+                                            torch.zeros(1, config.WORM_VECTOR_DIM, device=config.DEVICE))
+                                        agent.values_buffer.append(
+                                            torch.tensor(0.0, device=config.DEVICE, dtype=torch.float32))
+                                        agent.log_probs_buffer.append(
+                                            torch.tensor(0.0, device=config.DEVICE, dtype=torch.float32))
+                                        agent.entropies_buffer.append(
+                                            torch.tensor(0.0, device=config.DEVICE, dtype=torch.float32))
+                                        agent.action_indices_buffer.append(-1)
+                                        agent.action_params_raw_buffer.append({})
                                 else:
                                     action_to_send_obj = agent.select_action(game_state_for_action)
 
@@ -184,27 +187,29 @@ async def run_single_agent_session(agent_id_str: str, agent_type: str, checkpoin
 
                         elif msg_type == "TURN_RESULT":
                             if current_game_id is None: continue
-                            last_known_state_for_learn = msg.get("state")
+                            current_result_state = msg.get("state")
+                            last_known_state_for_learn = current_result_state  # Oppdater for neste bootstrap
+
                             if msg.get("player_id") == agent.player_id and is_my_turn_flag:
                                 reward = msg.get("reward", 0.0)
                                 current_game_step_rewards.append(reward)
-                                # For A2C, done er per episode. For PPO, done er per steg.
-                                # Serveren sender ikke 'done' i TURN_RESULT. Vi antar 'done=False' her for PPO.
-                                # A2C venter på PLAYER_ELIMINATED eller GAME_OVER for 'done'.
+
+                                is_my_worm_alive_after_action = False
+                                if current_result_state and current_result_state.get('worms'):
+                                    is_my_worm_alive_after_action = any(
+                                        w['id'] == (agent.player_id - 1) and w['health'] > 0
+                                        for w in current_result_state['worms']
+                                    )
+                                step_done_for_agent = not is_my_worm_alive_after_action
+
                                 if agent_type == 'a2c':
                                     agent.store_reward(reward)
                                 elif agent_type == 'ppo':
-                                    # Anta at ormen fortsatt er i live med mindre ELIMINATED eller GAME_OVER kommer
-                                    is_my_worm_alive_now = any(
-                                        w['id'] == (agent.player_id - 1) and w['health'] > 0 for w in
-                                        last_known_state_for_learn.get('worms', []))
-                                    step_done_for_ppo = not is_my_worm_alive_now
-                                    agent.store_reward_and_done(reward, step_done_for_ppo)
-
-                                    # PPO lærer per batch
+                                    agent.store_reward_and_done(reward, step_done_for_agent)
                                     if agent.batch_count >= (
                                     config.PPO_BATCH_SIZE if hasattr(config, 'PPO_BATCH_SIZE') else 128):
-                                        p_l, v_l, e_l = agent.learn(last_known_state_for_learn)
+                                        p_l, v_l, e_l = agent.learn(
+                                            current_result_state)  # PPO bruker current_result_state for bootstrap
                                         if p_l is not None:
                                             temp_policy_losses_for_game.append(p_l)
                                             temp_value_losses_for_game.append(v_l)
@@ -218,7 +223,7 @@ async def run_single_agent_session(agent_id_str: str, agent_type: str, checkpoin
                                 am_i_eliminated_this_game = True
                                 if agent_type == 'a2c':
                                     if agent.rewards_buffer:
-                                        p_l, v_l, e_l = agent.learn(last_known_state_for_learn, True)  # done=True
+                                        p_l, v_l, e_l = agent.learn(last_known_state_for_learn, True)
                                         if p_l is not None:
                                             temp_policy_losses_for_game.append(p_l)
                                             temp_value_losses_for_game.append(v_l)
@@ -226,21 +231,23 @@ async def run_single_agent_session(agent_id_str: str, agent_type: str, checkpoin
                                     else:
                                         agent.clear_buffers()
                                 elif agent_type == 'ppo':
-                                    # Siste 'done' for PPO ble satt i TURN_RESULT (hvis helse <=0).
-                                    # Hvis det er data igjen i batchen, prøv å lære.
-                                    if agent.batch_count > 0:
-                                        p_l, v_l, e_l = agent.learn(last_known_state_for_learn)
+                                    # Siste done-flagg ble satt i TURN_RESULT. Hvis det er nok for en batch, lær.
+                                    if agent.batch_count > 0 and agent.batch_count % (
+                                    config.PPO_BATCH_SIZE if hasattr(config, 'PPO_BATCH_SIZE') else 128) == 0:
+                                        p_l, v_l, e_l = agent.learn(
+                                            last_known_state_for_learn)  # Bootstrap med siste kjente state
                                         if p_l is not None:
                                             temp_policy_losses_for_game.append(p_l)
                                             temp_value_losses_for_game.append(v_l)
                                             temp_entropy_losses_for_game.append(e_l)
-                                    agent.clear_buffers_and_count()  # PPO tømmer etter learn
+                                    # PPO tømmer bufferne selv i learn() hvis batch er full.
+                                    # Hvis ikke full, beholdes data til neste batch eller GAME_OVER.
 
                         elif msg_type == "GAME_OVER":
                             if current_game_id is None: continue
                             final_state_for_learn = msg.get("final_state")
 
-                            if not am_i_eliminated_this_game:  # Hvis jeg fortsatt var i live
+                            if not am_i_eliminated_this_game:
                                 if agent_type == 'a2c':
                                     if agent.rewards_buffer:
                                         p_l, v_l, e_l = agent.learn(final_state_for_learn, True)
@@ -251,16 +258,17 @@ async def run_single_agent_session(agent_id_str: str, agent_type: str, checkpoin
                                     else:
                                         agent.clear_buffers()
                                 elif agent_type == 'ppo':
-                                    # PPO: Siste 'done' ble satt i siste TURN_RESULT. Lær hvis batch er full.
+                                    # Tving PPO til å lære av det som er igjen i bufferen, selv om det ikke er en full batch
                                     if agent.batch_count > 0:
+                                        # Sørg for at det siste done-flagget er True for siste steg
+                                        if agent.dones_buffer: agent.dones_buffer[-1] = True
                                         p_l, v_l, e_l = agent.learn(final_state_for_learn)
                                         if p_l is not None:
                                             temp_policy_losses_for_game.append(p_l)
                                             temp_value_losses_for_game.append(v_l)
                                             temp_entropy_losses_for_game.append(e_l)
-                                    agent.clear_buffers_and_count()
+                                    agent.clear_buffers_and_count()  # Alltid tøm PPO buffer etter GAME_OVER learn
 
-                            # Logg statistikk for det fullførte spillet
                             TRAINING_STATS[agent_id_str]['game_rewards_raw'].append(sum(current_game_step_rewards))
                             if temp_policy_losses_for_game: TRAINING_STATS[agent_id_str]['policy_loss_per_game'].append(
                                 np.mean(temp_policy_losses_for_game))
@@ -277,12 +285,12 @@ async def run_single_agent_session(agent_id_str: str, agent_type: str, checkpoin
                                 f"[{agent_name}] Spill {current_game_id} ferdig. Belønning: {sum(current_game_step_rewards):.2f}. (Agent totalt {games_count_this_agent} spill, {steps_this_game} steg)")
 
                             if games_count_this_agent > 0 and games_count_this_agent % config.SAVE_MODEL_EVERY_N_GAMES == 0:
-                                agent.save_model(checkpoint_path)
+                                agent.save_model(str(checkpoint_path))
 
                             if games_count_this_agent > 0 and games_count_this_agent % config.PLOT_STATS_EVERY_N_GAMES == 0:
                                 plot_aggregated_training_results()
 
-                            current_game_id = None  # Klar for neste NEW_GAME
+                            current_game_id = None
 
                         elif msg_type == "TURN_END":
                             pass
@@ -296,10 +304,8 @@ async def run_single_agent_session(agent_id_str: str, agent_type: str, checkpoin
                         break
                     except Exception as e_inner:
                         print(f"[{agent_name}] FEIL i meldingsløkke: {type(e_inner).__name__} - {e_inner}")
-                        # import traceback; traceback.print_exc() # For dypere debug
                         break
 
-            # Håndter disconnect utenom GAME_OVER (hvis data finnes og spillet var i gang)
             if current_game_id is not None and not am_i_eliminated_this_game:
                 if agent_type == 'a2c' and agent.rewards_buffer:
                     print(f"[{agent_name}] Lærer fra ufullstendig spill {current_game_id} (A2C) pga. disconnect.")
@@ -308,11 +314,12 @@ async def run_single_agent_session(agent_id_str: str, agent_type: str, checkpoin
                         v_l); temp_entropy_losses_for_game.append(e_l)
                 elif agent_type == 'ppo' and agent.batch_count > 0:
                     print(f"[{agent_name}] Lærer fra ufullstendig spill {current_game_id} (PPO) pga. disconnect.")
+                    if agent.dones_buffer: agent.dones_buffer[-1] = True  # Anta terminalt
                     p_l, v_l, e_l = agent.learn(last_known_state_for_learn)
                     if p_l is not None: temp_policy_losses_for_game.append(p_l); temp_value_losses_for_game.append(
                         v_l); temp_entropy_losses_for_game.append(e_l)
 
-                if temp_policy_losses_for_game:  # Logg dette ufullstendige spillet også
+                if temp_policy_losses_for_game:
                     TRAINING_STATS[agent_id_str]['game_rewards_raw'].append(sum(current_game_step_rewards))
                     TRAINING_STATS[agent_id_str]['policy_loss_per_game'].append(np.mean(temp_policy_losses_for_game))
                     TRAINING_STATS[agent_id_str]['value_loss_per_game'].append(np.mean(temp_value_losses_for_game))
@@ -324,9 +331,8 @@ async def run_single_agent_session(agent_id_str: str, agent_type: str, checkpoin
                 print(f"[{agent_name}] Avslutter økt pga shutdown flagg.")
                 break
 
-            # Websocket-tilkobling brutt, vent og prøv igjen
             connection_attempts += 1
-            wait_time = min(2 ** connection_attempts, 60)  # Exponential backoff
+            wait_time = min(2 ** connection_attempts, 60)
             print(
                 f"[{agent_name}] Tilkoblingsfeil. Prøver igjen om {wait_time}s. (Forsøk {connection_attempts}/{max_connection_attempts})")
             if connection_attempts >= max_connection_attempts and not SHUTDOWN_FLAG.is_set():
@@ -337,16 +343,14 @@ async def run_single_agent_session(agent_id_str: str, agent_type: str, checkpoin
                 await asyncio.sleep(wait_time)
             except asyncio.CancelledError:
                 if SHUTDOWN_FLAG.is_set(): break
-
         except Exception as e_outer:
             print(
                 f"[{agent_name}] Alvorlig FEIL (ytre løkke): {type(e_outer).__name__} - {e_outer}. Avslutter agent-økt.")
-            # import traceback; traceback.print_exc()
             SHUTDOWN_FLAG.set();
             break
 
     print(f"[{agent_name}] Økt ferdig. Totalt {TRAINING_STATS[agent_id_str]['games_played_count']} spill behandlet.")
-    agent.save_model(checkpoint_path)
+    agent.save_model(str(checkpoint_path))
 
 
 def plot_aggregated_training_results():
@@ -357,7 +361,7 @@ def plot_aggregated_training_results():
             return
 
         num_plot_rows = num_agents_with_data
-        fig, axs = plt.subplots(num_plot_rows, 4, figsize=(24, 6 * num_plot_rows), squeeze=False)  # Lagt til entropy
+        fig, axs = plt.subplots(num_plot_rows, 4, figsize=(24, 6 * num_plot_rows), squeeze=False)
         current_plot_row = 0
 
         for agent_id_str, stats in TRAINING_STATS.items():
@@ -366,7 +370,6 @@ def plot_aggregated_training_results():
 
             agent_type_label = stats.get("agent_type", "Ukjent").upper()
 
-            # Rewards
             rewards_raw = stats["game_rewards_raw"]
             axs[current_plot_row, 0].cla()
             axs[current_plot_row, 0].plot(rewards_raw, label='Belønning per spill', alpha=0.7, linestyle='-',
@@ -382,7 +385,6 @@ def plot_aggregated_training_results():
             axs[current_plot_row, 0].legend();
             axs[current_plot_row, 0].grid(True)
 
-            # Policy Loss
             policy_losses_pg = stats.get('policy_loss_per_game', [])
             axs[current_plot_row, 1].cla()
             if policy_losses_pg: axs[current_plot_row, 1].plot(policy_losses_pg, label='Policy Loss', marker='.',
@@ -390,10 +392,9 @@ def plot_aggregated_training_results():
             axs[current_plot_row, 1].set_title(f"Agent {agent_id_str} ({agent_type_label}) - Policy Tap")
             axs[current_plot_row, 1].set_xlabel("Spill #");
             axs[current_plot_row, 1].set_ylabel("Gj.snitt Policy Tap")
-            axs[current_plot_row, 1].legend();
+            if policy_losses_pg: axs[current_plot_row, 1].legend();  # Kun vis legend hvis det er data
             axs[current_plot_row, 1].grid(True)
 
-            # Value Loss
             value_losses_pg = stats.get('value_loss_per_game', [])
             axs[current_plot_row, 2].cla()
             if value_losses_pg: axs[current_plot_row, 2].plot(value_losses_pg, label='Value Loss', color='green',
@@ -401,10 +402,9 @@ def plot_aggregated_training_results():
             axs[current_plot_row, 2].set_title(f"Agent {agent_id_str} ({agent_type_label}) - Value Tap")
             axs[current_plot_row, 2].set_xlabel("Spill #");
             axs[current_plot_row, 2].set_ylabel("Gj.snitt Value Tap")
-            axs[current_plot_row, 2].legend();
+            if value_losses_pg: axs[current_plot_row, 2].legend();
             axs[current_plot_row, 2].grid(True)
 
-            # Entropy Loss
             entropy_losses_pg = stats.get('entropy_loss_per_game', [])
             axs[current_plot_row, 3].cla()
             if entropy_losses_pg: axs[current_plot_row, 3].plot(entropy_losses_pg, label='Entropy Loss', color='purple',
@@ -412,7 +412,7 @@ def plot_aggregated_training_results():
             axs[current_plot_row, 3].set_title(f"Agent {agent_id_str} ({agent_type_label}) - Entropy Tap")
             axs[current_plot_row, 3].set_xlabel("Spill #");
             axs[current_plot_row, 3].set_ylabel("Gj.snitt Entropy Tap")
-            axs[current_plot_row, 3].legend();
+            if entropy_losses_pg: axs[current_plot_row, 3].legend();
             axs[current_plot_row, 3].grid(True)
 
             current_plot_row += 1

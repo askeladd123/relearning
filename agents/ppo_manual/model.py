@@ -2,10 +2,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-# Endre denne linjen:
-# from . import config
-# til:
-from agents.common import config
+from agents.common import config # Korrekt import her
 
 
 class ActorCriticNetwork(nn.Module):
@@ -52,6 +49,10 @@ class ActorCriticNetwork(nn.Module):
         # Kombiner med worm data
         if worm_vector_tensor.dim() == 1:
             worm_vector_tensor = worm_vector_tensor.unsqueeze(0)
+        # Hvis worm_vector_tensor er (N, 1, D), klem til (N, D)
+        elif worm_vector_tensor.dim() == 3 and worm_vector_tensor.shape[1] == 1:
+            worm_vector_tensor = worm_vector_tensor.squeeze(1)
+
 
         try:
             x_combined = torch.cat((x_map, worm_vector_tensor), dim=1)
@@ -84,7 +85,6 @@ class ActorCriticNetwork(nn.Module):
         actor_outputs = {
             'action_type_probs': action_type_probs,
             'walk_dx_probs': walk_dx_probs,
-            # Kick har ingen parametere som predikeres av nettverket
             'bazooka_params': (bazooka_angle_mean, bazooka_angle_std),
             'grenade_dx_probs': grenade_dx_probs,
         }
