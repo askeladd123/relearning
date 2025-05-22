@@ -57,7 +57,7 @@ MAX_GRAD_NORM = 0.5 # For gradient clipping
 
 # ---- Trening & Lagring ----
 # Serveren kjører nå kontinuerlig spill. Klienten bør lagre periodisk.
-# NUM_EPISODES i main_a2c.py styrer hvor mange *spill* hver agent prøver å fullføre
+# NUM_EPISODES i main_coordinator.py styrer hvor mange *spill* hver agent prøver å fullføre
 # før den potensielt avslutter sin egen økt (men serveren fortsetter).
 # For kontinuerlig trening kan man sette NUM_EPISODES veldig høyt eller la den kjøre evig.
 NUM_GAMES_PER_AGENT_SESSION = 10000 # Hvor mange spill en agent-instans skal sikte mot

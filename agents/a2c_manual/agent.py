@@ -6,16 +6,16 @@ from torch.distributions import Categorical, Normal
 import numpy as np
 from pathlib import Path
 
-from . import config
-from .model import ActorCriticNetwork
-from .utils import preprocess_state, format_action
+from agents.common import config
+from .model import ActorCriticNetwork # model.py forblir foreløpig lokal for A2C
+from agents.common.utils import preprocess_state, format_action
 
 
 class A2CAgent:
     def __init__(self, agent_name="A2C_Agent_Default"):
         self.network = ActorCriticNetwork().to(config.DEVICE)
         self.optimizer = optim.Adam(self.network.parameters(), lr=config.LEARNING_RATE)
-        self.player_id = None  # Settes av main_a2c.py ved ASSIGN_ID
+        self.player_id = None  # Settes av main_coordinator.py ved ASSIGN_ID
         self.agent_name = agent_name  # For logging og unike sjekkpunktfiler
 
         # Buffere for ett læringssteg (tømmes etter hver .learn())

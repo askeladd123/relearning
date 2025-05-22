@@ -1,7 +1,7 @@
 # agents/a2c_manual/utils.py
 import torch
 import numpy as np
-from . import config
+from agents.common import config
 
 
 def preprocess_state(current_game_state_json, agent_player_id):

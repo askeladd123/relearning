@@ -1,11 +1,11 @@
-# agents/a2c_manual/model.py
+# agents/ppo_manual/model.py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-# Denne skal være:
+# Endre denne linjen:
+# from . import config
+# til:
 from agents.common import config
-# Hvis du hadde "..common", og det virket, er det ok, men "agents.common" er mer robust
-# når du kjører fra en høyere mappe med -m.
 
 
 class ActorCriticNetwork(nn.Module):
